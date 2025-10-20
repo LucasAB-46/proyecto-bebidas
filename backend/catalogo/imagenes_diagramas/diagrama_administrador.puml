@@ -1,0 +1,30 @@
+@startuml
+left to right direction
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+
+actor "Administrador" as Admin
+
+rectangle "Sistema de Gestión de Bebidas" {
+    package "Gestión de Usuarios y Roles" {
+        usecase "Gestión de Usuarios y Roles" as CU1
+    }
+    
+    package "Gestión de Maestros" {
+        usecase "ABM de Productos, Clientes, Proveedores" as CU2
+        usecase "Cargar Parámetros del Sistema" as CU3
+    }
+    
+    package "Gestión de Reportes y Datos" {
+        usecase "Generar Reportes" as CU4
+        usecase "Gestión de Copias de Seguridad" as CU5
+    }
+
+    Admin -- CU1
+    Admin -- CU2
+    Admin -- CU3
+    Admin -- CU4
+    Admin -- CU5
+}
+
+@enduml

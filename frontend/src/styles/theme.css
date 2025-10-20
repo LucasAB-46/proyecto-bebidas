@@ -1,0 +1,64 @@
+:root {
+  --brand-red: #e50914;         /* rojo marca */
+  --brand-black: #0d0d0d;       /* negro profundo */
+  --brand-white: #ffffff;       /* blanco puro */
+
+  /* MODO CLARO (día) */
+  --bg: var(--brand-white);
+  --fg: #1a1a1a;
+  --card: #ffffff;
+  --muted: #6c757d;
+  --primary: var(--brand-red);
+  --primary-contrast: #ffffff;
+  --border: #e9ecef;
+}
+
+[data-theme="dark"] {
+  /* MODO OSCURO (noche) */
+  --bg: #0b0b0c;                /* casi negro */
+  --fg: #f1f3f5;
+  --card: #16181b;
+  --muted: #adb5bd;
+  --primary: var(--brand-red);
+  --primary-contrast: #ffffff;
+  --border: #2b2f33;
+}
+
+/* Aplicación global */
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* Helpers Bootstrap + tema */
+.navbar.brand-navbar {
+  background: var(--card) !important;
+  border-bottom: 1px solid var(--border);
+}
+
+.btn-brand {
+  background: var(--primary);
+  color: var(--primary-contrast);
+  border: none;
+}
+.btn-brand:hover { opacity: .9; }
+
+.form-control, .form-select, .input-group-text {
+  background-color: var(--card);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.table {
+  color: var(--fg);
+}
+.table thead th {
+  border-bottom-color: var(--border);
+}
+.table td, .table th {
+  border-color: var(--border);
+}
+.card {
+  background: var(--card);
+  color: var(--fg);
+  border-color: var(--border);
+}

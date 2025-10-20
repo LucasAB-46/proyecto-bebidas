@@ -1,0 +1,28 @@
+# Entornos virtuales de Python
+backend/.venv/
+*.pyc
+__pycache__/
+.env
+
+# Archivos de base de datos local (si la tuvieras)
+*.sqlite3
+
+# Archivos de Django
+media/
+static_root/
+
+# Archivos de Node.js / React
+frontend/node_modules/
+frontend/dist/
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
+
+# Archivos de IDEs
+.vscode/
+.idea/

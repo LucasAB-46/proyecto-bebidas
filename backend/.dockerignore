@@ -1,0 +1,23 @@
+# Entorno virtual de Python
+.venv
+venv
+
+# Archivos de caché de Python
+__pycache__/
+*.pyc
+
+# Archivos de entorno local (estos se gestionarán de otra forma)
+.env
+
+# Carpetas de IDE y herramientas
+.vscode/
+.idea/
+
+# Archivos de testing y coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Archivos de Git
+.git
+.gitignore

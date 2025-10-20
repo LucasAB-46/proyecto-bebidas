@@ -1,0 +1,37 @@
+@startuml
+left to right direction
+actor Administrador
+actor "Encargado de Stock" as Encargado
+actor "Cajero / Ventas" as Cajero
+actor "Analista / Comercial" as Analista
+
+package "Sistema de Gestión de Bebidas" {
+    usecase (Gestión de Compras) as Compras
+    usecase (Gestión de Ventas) as Ventas
+    usecase (Gestión de Presupuestos) as Presupuestos
+    usecase (Gestión de Estadísticas) as Estadisticas
+    usecase (Gestión de Maestros) as Maestros
+    usecase (Gestión de Logística) as Logistica
+    usecase (Gestión de Reportes) as Reportes
+}
+
+Administrador -- (Maestros)
+Administrador -- (Estadisticas)
+Administrador -- (Logistica)
+Administrador -- (Reportes)
+Administrador -- (Compras)
+Administrador -- (Ventas)
+Administrador -- (Presupuestos)
+
+Encargado -- (Compras)
+Encargado -- (Maestros)
+Encargado -- (Estadisticas)
+
+Cajero -- (Ventas)
+Cajero -- (Presupuestos)
+Cajero -- (Maestros)
+
+Analista -- (Estadisticas)
+Analista -- (Logistica)
+Analista -- (Reportes)
+@enduml

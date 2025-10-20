@@ -1,0 +1,30 @@
+@startuml
+left to right direction
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+
+actor "Encargado de Stock/Compras" as Encargado
+
+rectangle "Sistema de Gestión de Bebidas" {
+    package "Gestión de Compras" {
+        usecase "Cargar Compra" as CargarCompra
+        usecase "Alta en línea de Proveedor" as AltaProveedor
+        usecase "Alta en línea de Producto" as AltaProducto
+        usecase "Ver Histórico de Costos" as HistorialCostos
+    }
+    
+    package "Maestros" {
+        usecase "ABM de Productos" as ABMProducto
+        usecase "ABM de Proveedores" as ABMProveedor
+    }
+}
+
+Encargado -- CargarCompra
+Encargado -- HistorialCostos
+Encargado -- ABMProducto
+Encargado -- ABMProveedor
+
+CargarCompra .> AltaProveedor : <<include>>
+CargarCompra .> AltaProducto : <<include>>
+
+@enduml

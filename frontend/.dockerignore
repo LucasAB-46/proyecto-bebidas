@@ -1,0 +1,23 @@
+# Dependencias de Node.js
+node_modules
+
+# Archivos de build (se generan dentro del contenedor)
+dist
+.vite
+
+# Archivos de entorno local
+.env
+.env.*
+
+# Logs y reportes
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Carpetas de IDE
+.vscode/
+.idea/
+
+# Archivos de Git
+.git
+.gitignore

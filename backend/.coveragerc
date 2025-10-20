@@ -1,0 +1,23 @@
+# .coveragerc
+[run]
+branch = True
+source =
+    catalogo
+    compras
+    ventas
+    core_app
+    core
+omit =
+    */migrations/*
+    */tests/*
+    manage.py
+    */apps.py
+    */admin.py
+    */wsgi.py
+    */asgi.py
+
+[report]
+show_missing = True
+skip_covered = False
+fail_under = 70
+precision = 1
