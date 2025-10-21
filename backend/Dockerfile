@@ -29,4 +29,4 @@ EXPOSE 8000
 # --- Fase 6: Comando de ejecución ---
 # El comando que se ejecutará cuando el contenedor se inicie.
 # Usamos 0.0.0.0 para que el servidor sea accesible desde fuera del contenedor.
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "core.wsgi:application"]
