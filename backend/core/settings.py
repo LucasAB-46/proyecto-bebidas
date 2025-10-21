@@ -12,7 +12,11 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "change-me")
 DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() == "true"
 
 # En dev vale '*' para no bloquearte; en prod, poner dominios reales
-ALLOWED_HOSTS = ["127.0.0.1", "localhost"] if DEBUG else os.getenv("ALLOWED_HOSTS", "").split(",")
+ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    'https://bebidas-backend.onrender.com',  
+]
 
 INSTALLED_APPS = [
     "core_app",
