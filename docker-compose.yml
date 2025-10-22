@@ -1,43 +1,34 @@
-version: '3.8'
+# render.yaml - Archivo de configuración para Render
 
 services:
-  # --- Servicio del Backend (Django) ---
-  backend:
-    build: ./backend  # Le dice a Compose que construya la imagen usando el Dockerfile en la carpeta ./backend
-    container_name: bebidas_backend
-    command: python manage.py runserver 0.0.0.0:8000 # Comando para iniciar el servidor
-    volumes:
-      - ./backend:/app  # Monta el código local en el contenedor para desarrollo en vivo
-    ports:
-      - "8000:8000" # Mapea el puerto 8000 del contenedor al puerto 8000 de tu máquina
-    env_file:
-      - ./backend/.env # Carga las variables de entorno desde el .env del backend
-    depends_on:
-      - db # Le dice a Docker que inicie el servicio 'db' antes que el backend
-
-  # --- Servicio del Frontend (React) ---
-  frontend:
-    build: ./frontend # Construye la imagen usando el Dockerfile en la carpeta ./frontend
-    container_name: bebidas_frontend
-    volumes:
-      - ./frontend/src:/app/src # Monta solo la carpeta 'src' para desarrollo en vivo
-    ports:
-      - "5173:80" # Mapea el puerto 80 del contenedor (Nginx) al puerto 5173 de tu máquina
-    depends_on:
-      - backend # Inicia el frontend después de que el backend esté listo
-
   # --- Servicio de la Base de Datos (PostgreSQL) ---
-  db:
-    image: postgres:15-alpine # Usa una imagen oficial de PostgreSQL
-    container_name: bebidas_db
-    volumes:
-      - postgres_data:/var/lib/postgresql/data/ # Persiste los datos de la BD
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres # ¡Cambiar en producción!
-      - POSTGRES_DB=bebidasdb
-    ports:
-      - "5432:5432" # Mapea el puerto de la BD para que puedas conectarte desde tu máquina si es necesario
+  # Render maneja la base de datos como un servicio separado.
+  # Debes crearla primero desde el panel de control de Render.
+  - type: psql
+    name: bebidas-db # Puedes ponerle el nombre que quieras
+    plan: free # O el plan que necesites
 
-volumes:
-  postgres_data: # Define el volumen para persistir los datos de la BD
+  # --- Servicio del Backend (Django) ---
+  # Esto reemplaza tu servicio 'backend' de docker-compose.
+  - type: web
+    name: bebidas-backend
+    env: docker
+    # Apunta al directorio donde está el código de tu backend
+    rootDir: backend
+    # Render construirá el Dockerfile que se encuentra en la carpeta 'backend'
+    dockerfilePath: ./Dockerfile
+    plan: free # O el plan que necesites
+    # Comando para ejecutar las migraciones ANTES de iniciar el servidor
+    preDeployCommand: "python manage.py migrate"
+    # Comando para iniciar el servidor de producción (Gunicorn es el estándar)
+    # Render inyecta la variable $PORT automáticamente.
+    dockerCommand: "gunicorn PROYECTO_BEBIDAS.wsgi --bind 0.0.0.0:$PORT"
+    envVars:
+      - key: DATABASE_URL
+        # Esto toma la URL de conexión del servicio de base de datos 'bebidas-db' creado arriba
+        fromService:
+          type: psql
+          name: bebidas-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: 3.11 # Asegúrate de que coincida con la versión en tu Dockerfile

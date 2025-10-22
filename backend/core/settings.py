@@ -1,4 +1,4 @@
-# core/settings.py
+# backend/core/settings.py
 from pathlib import Path
 import os
 import dj_database_url
@@ -9,16 +9,18 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "change-me")
-DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() == "true"
+# Render generará la SECRET_KEY a través del render.yaml
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
-# Configuración robusta para ALLOWED_HOSTS (esto ya estaba bien)
+# El modo DEBUG se desactiva automáticamente en Render
+DEBUG = 'RENDER' not in os.environ
+
 ALLOWED_HOSTS = []
 RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
 if RENDER_EXTERNAL_HOSTNAME:
     ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
 if DEBUG:
-    ALLOWED_HOSTS.extend(['localhost', '127.0.0.1'])
+    ALLOWED_HOSTS.append('127.0.0.1')
 
 INSTALLED_APPS = [
     "core_app",
@@ -27,6 +29,8 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
+    # WhiteNoise debe ir aquí, después de 'messages' y antes de 'staticfiles'
+    "whitenoise.runserver_nostatic",
     "django.contrib.staticfiles",
     # Terceros
     "rest_framework",
@@ -41,11 +45,11 @@ INSTALLED_APPS = [
     "ventas",
 ]
 
-# --- CORRECCIÓN IMPORTANTE: ORDEN DEL MIDDLEWARE ---
-# CorsMiddleware debe estar lo más arriba posible para interceptar las peticiones de sondeo (preflight).
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    # Middleware de WhiteNoise, justo después de SecurityMiddleware
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -53,7 +57,6 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
-# --- FIN DE LA CORRECCIÓN ---
 
 ROOT_URLCONF = "core.urls"
 
@@ -75,7 +78,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "core.wsgi.application"
 
-# Configuración de base de datos para Render (esto ya estaba bien)
 DATABASES = {
     'default': dj_database_url.config(
         default='sqlite:///' + os.path.join(BASE_DIR, 'db.sqlite3'),
@@ -90,8 +92,15 @@ TIME_ZONE = "America/Argentina/Buenos_Aires"
 USE_I18N = True
 USE_TZ = True
 
+# --- Configuración de archivos estáticos para producción con WhiteNoise ---
 STATIC_URL = "static/"
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ... (El resto de tu configuración de REST_FRAMEWORK, SIMPLE_JWT, etc. puede quedar igual)
+# Pega el resto de tu configuración aquí...
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -120,14 +129,17 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "0.1.0",
 }
 
-# --- CORRECCIÓN IMPORTANTE: CONFIGURACIÓN DE CORS SIMPLIFICADA ---
-# Reemplazamos la lógica condicional con una lista explícita para asegurar que el origen del frontend esté permitido.
 CORS_ALLOWED_ORIGINS = [
-    "https://bebidas-frontend.onrender.com",
+    # Aquí deberías poner la URL de tu frontend cuando lo despliegues
+    # "https://tu-frontend.onrender.com", 
 ]
+# La variable RENDER_EXTERNAL_URL contiene la URL pública de tu servicio de frontend
+RENDER_FRONTEND_URL = os.environ.get('RENDER_EXTERNAL_URL')
+if RENDER_FRONTEND_URL:
+    CORS_ALLOWED_ORIGINS.append(RENDER_FRONTEND_URL)
 
-# Si necesitas probar en local, puedes añadir tu URL de desarrollo aquí también.
-# Por ejemplo: CORS_ALLOWED_ORIGINS.append("http://localhost:5173")
+if DEBUG:
+    CORS_ALLOWED_ORIGINS.append("http://localhost:5173")
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -140,4 +152,3 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
     "x-local-id",
 ]
-# --- FIN DE LA CORRECCIÓN ---

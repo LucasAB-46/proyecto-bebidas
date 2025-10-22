@@ -1,0 +1,35 @@
+# render.yaml - Archivo de configuración para Render
+
+services:
+  # --- Servicio de la Base de Datos (PostgreSQL) ---
+  - type: psql
+    name: bebidas-db
+    plan: free
+
+  # --- Servicio del Backend (Django) ---
+  - type: web
+    name: bebidas-backend
+    env: docker
+    # Directorio raíz donde vive el código del backend
+    rootDir: backend
+    plan: free
+    # Comandos que se ejecutan ANTES de iniciar el servidor
+    # 1. Recolecta todos los archivos estáticos en la carpeta STATIC_ROOT
+    # 2. Aplica las migraciones a la base de datos
+    preDeployCommand: "python manage.py collectstatic --no-input && python manage.py migrate"
+    # Comando para iniciar el servidor de producción con Gunicorn
+    # Apunta a 'core.wsgi' que es la entrada correcta para tu aplicación
+    dockerCommand: "gunicorn core.wsgi --bind 0.0.0.0:$PORT"
+    envVars:
+      # Variable de entorno para la URL de la base de datos
+      - key: DATABASE_URL
+        fromService:
+          type: psql
+          name: bebidas-db
+          property: connectionString
+      # Variable de entorno para la clave secreta de Django
+      - key: DJANGO_SECRET_KEY
+        generateValue: true # Render generará una clave segura automáticamente
+      # Variable de entorno para la versión de Python (buena práctica)
+      - key: PYTHON_VERSION
+        value: 3.11 # Asegúrate que coincida con tu Dockerfile
