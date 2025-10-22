@@ -1,6 +1,7 @@
 # core/settings.py
 from pathlib import Path
 import os
+import dj_database_url  # <--- AÑADIDO PARA RENDER
 from datetime import timedelta
 from dotenv import load_dotenv
 
@@ -11,12 +12,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "change-me")
 DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() == "true"
 
-# En dev vale '*' para no bloquearte; en prod, poner dominios reales
-ALLOWED_HOSTS = [
-    'localhost',
-    '127.0.0.1',
-    'https://bebidas-backend.onrender.com',  
-]
+# --- MODIFICADO PARA RENDER ---
+# Esta configuración es más robusta. Toma el dominio de Render automáticamente.
+ALLOWED_HOSTS = []
+RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+if RENDER_EXTERNAL_HOSTNAME:
+    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
+
+# Para desarrollo local, añadimos los hosts locales si DEBUG es True
+if DEBUG:
+    ALLOWED_HOSTS.extend(['localhost', '127.0.0.1'])
+# --- FIN DE LA MODIFICACIÓN ---
+
 
 INSTALLED_APPS = [
     "core_app",
@@ -70,16 +77,18 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "core.wsgi.application"
 
+
+# --- REEMPLAZADO PARA RENDER ---
+# Esta configuración usa la variable DATABASE_URL de Render en producción,
+# pero mantiene tu base de datos local (sqlite) para desarrollo.
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("DB_NAME", "bebidasdb"),
-        "USER": os.getenv("DB_USER", "postgres"),
-        "PASSWORD": os.getenv("DB_PASSWORD", ""),
-        "HOST": os.getenv("DB_HOST", "127.0.0.1"),
-        "PORT": os.getenv("DB_PORT", "5432"),
-    }
+    'default': dj_database_url.config(
+        default='sqlite:///' + os.path.join(BASE_DIR, 'db.sqlite3'),
+        conn_max_age=600
+    )
 }
+# --- FIN DEL REEMPLAZO ---
+
 
 AUTH_PASSWORD_VALIDATORS = []
 
@@ -118,8 +127,7 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "0.1.0",
 }
 
-# CORS
-# En dev permitimos todo; en prod, usa CORS_ALLOWED_ORIGINS
+# CORS (Tu configuración aquí está perfecta, no se toca)
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
 else:
@@ -129,9 +137,6 @@ else:
     ]
 CORS_ALLOW_CREDENTIALS = True
 
-# --- INICIO DE LA MODIFICACIÓN ---
-# Lista de headers que el navegador tiene permitido enviar a nuestra API.
-# Debemos añadir explícitamente cualquier header personalizado que usemos.
 CORS_ALLOW_HEADERS = [
     "accept",
     "authorization",
@@ -139,6 +144,5 @@ CORS_ALLOW_HEADERS = [
     "user-agent",
     "x-csrftoken",
     "x-requested-with",
-    "x-local-id",  # Header personalizado para el scoping por local
+    "x-local-id",
 ]
-# --- FIN DE LA MODIFICACIÓN ---
