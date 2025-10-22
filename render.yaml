@@ -1,7 +1,7 @@
-# render.yaml - Archivo de configuración para Render
+# render.yaml
 
 services:
-  # --- Servicio de la Base de Datos (PostgreSQL) ---
+  # ... (tu servicio de base de datos psql) ...
   - type: psql
     name: bebidas-db
     plan: free
@@ -10,26 +10,18 @@ services:
   - type: web
     name: bebidas-backend
     env: docker
-    # Directorio raíz donde vive el código del backend
     rootDir: backend
     plan: free
-    # Comandos que se ejecutan ANTES de iniciar el servidor
-    # 1. Recolecta todos los archivos estáticos en la carpeta STATIC_ROOT
-    # 2. Aplica las migraciones a la base de datos
-    preDeployCommand: "python manage.py collectstatic --no-input && python manage.py migrate"
-    # Comando para iniciar el servidor de producción con Gunicorn
-    # Apunta a 'core.wsgi' que es la entrada correcta para tu aplicación
+    # --- LÍNEA MODIFICADA ---
+    # Ahora ejecutamos los 3 comandos en el orden correcto
+    preDeployCommand: "python manage.py collectstatic --no-input && python manage.py migrate && python manage.py create_superuser_on_deploy"
     dockerCommand: "gunicorn core.wsgi --bind 0.0.0.0:$PORT"
     envVars:
-      # Variable de entorno para la URL de la base de datos
-      - key: DATABASE_URL
-        fromService:
-          type: psql
-          name: bebidas-db
-          property: connectionString
-      # Variable de entorno para la clave secreta de Django
-      - key: DJANGO_SECRET_KEY
-        generateValue: true # Render generará una clave segura automáticamente
-      # Variable de entorno para la versión de Python (buena práctica)
-      - key: PYTHON_VERSION
-        value: 3.11 # Asegúrate que coincida con tu Dockerfile
+      # ... (tus variables de entorno DATABASE_URL, DJANGO_SECRET_KEY, etc.) ...
+      # Asegúrate de que las variables del superusuario siguen aquí o en el panel de Render
+      - key: DJANGO_SUPERUSER_USERNAME
+        fromEnvironmentVariable: DJANGO_SUPERUSER_USERNAME
+      - key: DJANGO_SUPERUSER_EMAIL
+        fromEnvironmentVariable: DJANGO_SUPERUSER_EMAIL
+      - key: DJANGO_SUPERUSER_PASSWORD
+        fromEnvironmentVariable: DJANGO_SUPERUSER_PASSWORD
