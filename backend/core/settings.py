@@ -1,7 +1,7 @@
 # core/settings.py
 from pathlib import Path
 import os
-import dj_database_url  # <--- AÑADIDO PARA RENDER
+import dj_database_url
 from datetime import timedelta
 from dotenv import load_dotenv
 
@@ -12,18 +12,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "change-me")
 DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() == "true"
 
-# --- MODIFICADO PARA RENDER ---
-# Esta configuración es más robusta. Toma el dominio de Render automáticamente.
+# Configuración robusta para ALLOWED_HOSTS (esto ya estaba bien)
 ALLOWED_HOSTS = []
 RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
 if RENDER_EXTERNAL_HOSTNAME:
     ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
-
-# Para desarrollo local, añadimos los hosts locales si DEBUG es True
 if DEBUG:
     ALLOWED_HOSTS.extend(['localhost', '127.0.0.1'])
-# --- FIN DE LA MODIFICACIÓN ---
-
 
 INSTALLED_APPS = [
     "core_app",
@@ -46,6 +41,8 @@ INSTALLED_APPS = [
     "ventas",
 ]
 
+# --- CORRECCIÓN IMPORTANTE: ORDEN DEL MIDDLEWARE ---
+# CorsMiddleware debe estar lo más arriba posible para interceptar las peticiones de sondeo (preflight).
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
@@ -56,6 +53,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+# --- FIN DE LA CORRECCIÓN ---
 
 ROOT_URLCONF = "core.urls"
 
@@ -77,18 +75,13 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "core.wsgi.application"
 
-
-# --- REEMPLAZADO PARA RENDER ---
-# Esta configuración usa la variable DATABASE_URL de Render en producción,
-# pero mantiene tu base de datos local (sqlite) para desarrollo.
+# Configuración de base de datos para Render (esto ya estaba bien)
 DATABASES = {
     'default': dj_database_url.config(
         default='sqlite:///' + os.path.join(BASE_DIR, 'db.sqlite3'),
         conn_max_age=600
     )
 }
-# --- FIN DEL REEMPLAZO ---
-
 
 AUTH_PASSWORD_VALIDATORS = []
 
@@ -127,14 +120,15 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "0.1.0",
 }
 
-# CORS (Tu configuración aquí está perfecta, no se toca)
-if DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
-else:
-    CORS_ALLOW_ALL_ORIGINS = False
-    CORS_ALLOWED_ORIGINS = [
-        o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
-    ]
+# --- CORRECCIÓN IMPORTANTE: CONFIGURACIÓN DE CORS SIMPLIFICADA ---
+# Reemplazamos la lógica condicional con una lista explícita para asegurar que el origen del frontend esté permitido.
+CORS_ALLOWED_ORIGINS = [
+    "https://bebidas-frontend.onrender.com",
+]
+
+# Si necesitas probar en local, puedes añadir tu URL de desarrollo aquí también.
+# Por ejemplo: CORS_ALLOWED_ORIGINS.append("http://localhost:5173")
+
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_HEADERS = [
@@ -146,3 +140,4 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
     "x-local-id",
 ]
+# --- FIN DE LA CORRECCIÓN ---
