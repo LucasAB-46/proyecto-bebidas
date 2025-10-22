@@ -3,24 +3,28 @@ from pathlib import Path
 import os
 import dj_database_url
 from datetime import timedelta
-from dotenv import load_dotenv
 
-load_dotenv()
+# ELIMINADO: load_dotenv() no debe usarse en producción. Las variables vienen del entorno.
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Render generará la SECRET_KEY a través del render.yaml
+# Render inyectará esta variable. Si no existe, os.getenv devuelve None y Django fallará con un error claro.
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
-# El modo DEBUG se desactiva automáticamente en Render
-DEBUG = 'RENDER' not in os.environ
+# Esta es la forma correcta de detectar si estamos en Render.
+IS_RENDER = 'RENDER' in os.environ
+DEBUG = not IS_RENDER
 
 ALLOWED_HOSTS = []
-RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
-if RENDER_EXTERNAL_HOSTNAME:
-    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
-if DEBUG:
+if IS_RENDER:
+    RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+    if RENDER_EXTERNAL_HOSTNAME:
+        ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
+
+# Para desarrollo local
+if not IS_RENDER:
     ALLOWED_HOSTS.append('127.0.0.1')
+    ALLOWED_HOSTS.append('localhost')
 
 INSTALLED_APPS = [
     "core_app",
@@ -29,8 +33,7 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
-    # WhiteNoise debe ir aquí, después de 'messages' y antes de 'staticfiles'
-    "whitenoise.runserver_nostatic",
+    "whitenoise.runserver_nostatic", # Esto está bien, no afecta producción
     "django.contrib.staticfiles",
     # Terceros
     "rest_framework",
@@ -46,11 +49,11 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
-    # Middleware de WhiteNoise, justo después de SecurityMiddleware
+    # WhiteNoise Middleware - ¡La posición es importante!
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    "corsheaders.middleware.CorsMiddleware", # Movido para estar antes de CommonMiddleware
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -78,12 +81,20 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "core.wsgi.application"
 
-DATABASES = {
-    'default': dj_database_url.config(
-        default='sqlite:///' + os.path.join(BASE_DIR, 'db.sqlite3'),
-        conn_max_age=600
-    )
-}
+# --- MODIFICACIÓN CLAVE ---
+# Hacemos que la configuración de la base de datos falle ruidosamente si DATABASE_URL no está.
+# No más fallback silencioso a SQLite en producción.
+if IS_RENDER:
+    DATABASES = {
+        'default': dj_database_url.config(conn_max_age=600, ssl_require=True)
+    }
+else:
+    DATABASES = {
+        'default': dj_database_url.config(
+            default='sqlite:///' + os.path.join(BASE_DIR, 'db.sqlite3')
+        )
+    }
+
 
 AUTH_PASSWORD_VALIDATORS = []
 
@@ -92,29 +103,19 @@ TIME_ZONE = "America/Argentina/Buenos_Aires"
 USE_I18N = True
 USE_TZ = True
 
-# --- Configuración de archivos estáticos para producción con WhiteNoise ---
 STATIC_URL = "static/"
+# Esta es la carpeta donde `collectstatic` pondrá todos los archivos estáticos.
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+# Esto le dice a WhiteNoise que sirva archivos comprimidos para un mejor rendimiento.
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# ... (El resto de tu configuración de REST_FRAMEWORK, SIMPLE_JWT, etc. puede quedar igual)
-# Pega el resto de tu configuración aquí...
-
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-    ),
-    "DEFAULT_PERMISSION_CLASSES": (
-        "rest_framework.permissions.IsAuthenticated",
-    ),
+    "DEFAULT_AUTHENTICATION_CLASSES": ("rest_framework_simplejwt.authentication.JWTAuthentication",),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_FILTER_BACKENDS": [
-        "django_filters.rest_framework.DjangoFilterBackend",
-        "rest_framework.filters.SearchFilter",
-        "rest_framework.filters.OrderingFilter",
-    ],
+    "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend", "rest_framework.filters.SearchFilter", "rest_framework.filters.OrderingFilter"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
 }
@@ -129,26 +130,15 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "0.1.0",
 }
 
-CORS_ALLOWED_ORIGINS = [
-    # Aquí deberías poner la URL de tu frontend cuando lo despliegues
-    # "https://tu-frontend.onrender.com", 
-]
-# La variable RENDER_EXTERNAL_URL contiene la URL pública de tu servicio de frontend
-RENDER_FRONTEND_URL = os.environ.get('RENDER_EXTERNAL_URL')
-if RENDER_FRONTEND_URL:
-    CORS_ALLOWED_ORIGINS.append(RENDER_FRONTEND_URL)
+# --- Configuración de CORS ---
+CORS_ALLOWED_ORIGINS = []
+if IS_RENDER:
+    RENDER_FRONTEND_URL = os.environ.get('RENDER_EXTERNAL_URL')
+    if RENDER_FRONTEND_URL:
+        CORS_ALLOWED_ORIGINS.append(RENDER_FRONTEND_URL)
 
-if DEBUG:
+if not IS_RENDER:
     CORS_ALLOWED_ORIGINS.append("http://localhost:5173")
 
 CORS_ALLOW_CREDENTIALS = True
-
-CORS_ALLOW_HEADERS = [
-    "accept",
-    "authorization",
-    "content-type",
-    "user-agent",
-    "x-csrftoken",
-    "x-requested-with",
-    "x-local-id",
-]
+CORS_ALLOW_HEADERS = ["accept", "authorization", "content-type", "user-agent", "x-csrftoken", "x-requested-with", "x-local-id"]

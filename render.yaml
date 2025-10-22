@@ -1,28 +1,23 @@
 services:
-  # --- Servicio de la Base de Datos (PostgreSQL) ---
-  # Esto se queda exactamente igual.
   - type: psql
     name: bebidas-db
     plan: free
 
-  # --- Servicio del Backend (Django) ---
-  # Aquí está la corrección.
   - type: web
     name: bebidas-backend
     env: docker
     rootDir: backend
     plan: free
     
-    # --- CORRECCIÓN CLAVE ---
-    # Ejecutamos ÚNICAMENTE el comando de migración para asegurar que la base de datos se construya.
-    # Los otros comandos (collectstatic, create_superuser) los quitamos temporalmente para eliminar puntos de fallo.
-    preDeployCommand: "python manage.py migrate"
+    # --- COMANDO DE PRE-DESPLIEGUE FINAL ---
+    # Ahora que WhiteNoise está bien configurado, ejecutamos ambos comandos.
+    # 1. collectstatic: Recopila todos los archivos estáticos en la carpeta STATIC_ROOT.
+    # 2. migrate: Aplica las migraciones a la base de datos de Postgres.
+    # El '2>&1' se mantiene como buena práctica para capturar cualquier error.
+    preDeployCommand: "python manage.py collectstatic --no-input && python manage.py migrate 2>&1"
     
-    # Este comando inicia el servidor una vez que las migraciones se completaron con éxito.
     dockerCommand: "gunicorn core.wsgi --bind 0.0.0.0:$PORT"
     
-    # Asegúrate de que TODAS tus variables de entorno necesarias estén aquí o en el panel de Render.
-    # Render las inyectará en el entorno de ejecución.
     envVars:
       - key: DATABASE_URL
         fromService:
@@ -30,10 +25,6 @@ services:
           name: bebidas-db
           property: connectionString
       - key: DJANGO_SECRET_KEY
-        generateValue: true # O usa un valor que tengas en el panel de Render
-      - key: DJANGO_SUPERUSER_USERNAME
-        fromEnvironmentVariable: DJANGO_SUPERUSER_USERNAME
-      - key: DJANGO_SUPERUSER_EMAIL
-        fromEnvironmentVariable: DJANGO_SUPERUSER_EMAIL
-      - key: DJANGO_SUPERUSER_PASSWORD
-        fromEnvironmentVariable: DJANGO_SUPERUSER_PASSWORD```
+        generateValue: true
+      - key: DEBUG # Añadimos esta para que el settings.py no falle
+        value: "False"
