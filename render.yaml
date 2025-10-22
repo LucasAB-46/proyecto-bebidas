@@ -9,10 +9,11 @@ services:
     rootDir: backend
     plan: free
     
-    # --- COMANDO DE PRE-DESPLIEGUE FINAL Y CORRECTO ---
-    # 1. collectstatic: Recopila los archivos estáticos para WhiteNoise.
-    # 2. migrate: Aplica las migraciones a la base de datos de Postgres.
-    preDeployCommand: "python manage.py collectstatic --no-input && python manage.py migrate"
+    # --- PRUEBA FINAL: AISLAR MIGRATE ---
+    # Ejecutamos ÚNICA Y EXCLUSIVAMENTE el comando de migración.
+    # Si esto funciona, el problema es collectstatic.
+    # Si esto falla, nos dará el error final y definitivo.
+    preDeployCommand: "python manage.py migrate"
     
     dockerCommand: "gunicorn core.wsgi --bind 0.0.0.0:$PORT"
     
