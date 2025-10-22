@@ -1,27 +1,39 @@
-# render.yaml
-
 services:
-  # ... (tu servicio de base de datos psql) ...
+  # --- Servicio de la Base de Datos (PostgreSQL) ---
+  # Esto se queda exactamente igual.
   - type: psql
     name: bebidas-db
     plan: free
 
   # --- Servicio del Backend (Django) ---
+  # Aquí está la corrección.
   - type: web
     name: bebidas-backend
     env: docker
     rootDir: backend
     plan: free
-    # --- LÍNEA MODIFICADA ---
-    # Ahora ejecutamos los 3 comandos en el orden correcto
-    preDeployCommand: "python manage.py collectstatic --no-input && python manage.py migrate && python manage.py create_superuser_on_deploy"
+    
+    # --- CORRECCIÓN CLAVE ---
+    # Ejecutamos ÚNICAMENTE el comando de migración para asegurar que la base de datos se construya.
+    # Los otros comandos (collectstatic, create_superuser) los quitamos temporalmente para eliminar puntos de fallo.
+    preDeployCommand: "python manage.py migrate"
+    
+    # Este comando inicia el servidor una vez que las migraciones se completaron con éxito.
     dockerCommand: "gunicorn core.wsgi --bind 0.0.0.0:$PORT"
+    
+    # Asegúrate de que TODAS tus variables de entorno necesarias estén aquí o en el panel de Render.
+    # Render las inyectará en el entorno de ejecución.
     envVars:
-      # ... (tus variables de entorno DATABASE_URL, DJANGO_SECRET_KEY, etc.) ...
-      # Asegúrate de que las variables del superusuario siguen aquí o en el panel de Render
+      - key: DATABASE_URL
+        fromService:
+          type: psql
+          name: bebidas-db
+          property: connectionString
+      - key: DJANGO_SECRET_KEY
+        generateValue: true # O usa un valor que tengas en el panel de Render
       - key: DJANGO_SUPERUSER_USERNAME
         fromEnvironmentVariable: DJANGO_SUPERUSER_USERNAME
       - key: DJANGO_SUPERUSER_EMAIL
         fromEnvironmentVariable: DJANGO_SUPERUSER_EMAIL
       - key: DJANGO_SUPERUSER_PASSWORD
-        fromEnvironmentVariable: DJANGO_SUPERUSER_PASSWORD
+        fromEnvironmentVariable: DJANGO_SUPERUSER_PASSWORD```
