@@ -9,13 +9,13 @@ services:
     rootDir: backend
     plan: free
     
-    # --- COMANDO DE PRE-DESPLIEGUE FINAL ---
-    # Ahora que WhiteNoise está bien configurado, ejecutamos ambos comandos.
-    # 1. collectstatic: Recopila todos los archivos estáticos en la carpeta STATIC_ROOT.
-    # 2. migrate: Aplica las migraciones a la base de datos de Postgres.
-    # El '2>&1' se mantiene como buena práctica para capturar cualquier error.
-    preDeployCommand: "python manage.py collectstatic --no-input && python manage.py migrate 2>&1"
+    # --- COMANDO DE DIAGNÓSTICO #1 ---
+    # 1. ls -la: Lista todos los archivos y sus permisos en el directorio de trabajo (/app).
+    # 2. echo ...: Imprime un separador para que el log sea legible.
+    # 3. printenv: Imprime TODAS las variables de entorno que el contenedor está viendo.
+    preDeployCommand: "ls -la && echo '--- ENV VARS ---' && printenv"
     
+    # Mantenemos el dockerCommand igual, aunque no debería llegar a ejecutarse si el preDeployCommand falla.
     dockerCommand: "gunicorn core.wsgi --bind 0.0.0.0:$PORT"
     
     envVars:
@@ -26,5 +26,5 @@ services:
           property: connectionString
       - key: DJANGO_SECRET_KEY
         generateValue: true
-      - key: DEBUG # Añadimos esta para que el settings.py no falle
+      - key: DEBUG
         value: "False"
