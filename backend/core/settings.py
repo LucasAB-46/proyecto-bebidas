@@ -4,25 +4,25 @@ import os
 import dj_database_url
 from datetime import timedelta
 
-# ELIMINADO: load_dotenv() no debe usarse en producción. Las variables vienen del entorno.
-
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Esta es la forma correcta de detectar si estamos en Render.
+IS_RENDER = 'RENDER' in os.environ
 
 # Render inyectará esta variable. Si no existe, os.getenv devuelve None y Django fallará con un error claro.
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
-# Esta es la forma correcta de detectar si estamos en Render.
-IS_RENDER = 'RENDER' in os.environ
+# DEBUG es Falso solo si estamos en Render.
 DEBUG = not IS_RENDER
 
 ALLOWED_HOSTS = []
 if IS_RENDER:
+    # Obtenemos el hostname que Render nos asigna.
     RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if RENDER_EXTERNAL_HOSTNAME:
         ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
-
-# Para desarrollo local
-if not IS_RENDER:
+else:
+    # Hosts para desarrollo local
     ALLOWED_HOSTS.append('127.0.0.1')
     ALLOWED_HOSTS.append('localhost')
 
@@ -33,7 +33,7 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
-    "whitenoise.runserver_nostatic", # Esto está bien, no afecta producción
+    "whitenoise.runserver_nostatic",
     "django.contrib.staticfiles",
     # Terceros
     "rest_framework",
@@ -53,7 +53,7 @@ MIDDLEWARE = [
     # WhiteNoise Middleware - ¡La posición es importante!
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    "corsheaders.middleware.CorsMiddleware", # Movido para estar antes de CommonMiddleware
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -81,20 +81,20 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "core.wsgi.application"
 
-# --- MODIFICACIÓN CLAVE ---
-# Hacemos que la configuración de la base de datos falle ruidosamente si DATABASE_URL no está.
-# No más fallback silencioso a SQLite en producción.
+# --- CONFIGURACIÓN DE BASE DE DATOS A PRUEBA DE FALLOS ---
 if IS_RENDER:
+    # En producción, usamos la DATABASE_URL de Render con SSL.
     DATABASES = {
         'default': dj_database_url.config(conn_max_age=600, ssl_require=True)
     }
 else:
+    # En desarrollo, usamos un archivo local de SQLite.
     DATABASES = {
-        'default': dj_database_url.config(
-            default='sqlite:///' + os.path.join(BASE_DIR, 'db.sqlite3')
-        )
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
     }
-
 
 AUTH_PASSWORD_VALIDATORS = []
 
@@ -104,9 +104,7 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
-# Esta es la carpeta donde `collectstatic` pondrá todos los archivos estáticos.
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-# Esto le dice a WhiteNoise que sirva archivos comprimidos para un mejor rendimiento.
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -135,7 +133,7 @@ CORS_ALLOWED_ORIGINS = []
 if IS_RENDER:
     RENDER_FRONTEND_URL = os.environ.get('RENDER_EXTERNAL_URL')
     if RENDER_FRONTEND_URL:
-        CORS_ALLOWED_ORIGINS.append(RENDER_FRONTEND_URL)
+        CORS_ALLOWED_origins.append(RENDER_FRONTEND_URL)
 
 if not IS_RENDER:
     CORS_ALLOWED_ORIGINS.append("http://localhost:5173")

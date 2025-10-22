@@ -9,13 +9,11 @@ services:
     rootDir: backend
     plan: free
     
-    # --- COMANDO DE DIAGNÓSTICO #1 ---
-    # 1. ls -la: Lista todos los archivos y sus permisos en el directorio de trabajo (/app).
-    # 2. echo ...: Imprime un separador para que el log sea legible.
-    # 3. printenv: Imprime TODAS las variables de entorno que el contenedor está viendo.
-    preDeployCommand: "ls -la && echo '--- ENV VARS ---' && printenv"
+    # --- COMANDO DE PRE-DESPLIEGUE FINAL Y CORRECTO ---
+    # 1. collectstatic: Recopila los archivos estáticos para WhiteNoise.
+    # 2. migrate: Aplica las migraciones a la base de datos de Postgres.
+    preDeployCommand: "python manage.py collectstatic --no-input && python manage.py migrate"
     
-    # Mantenemos el dockerCommand igual, aunque no debería llegar a ejecutarse si el preDeployCommand falla.
     dockerCommand: "gunicorn core.wsgi --bind 0.0.0.0:$PORT"
     
     envVars:
@@ -26,5 +24,3 @@ services:
           property: connectionString
       - key: DJANGO_SECRET_KEY
         generateValue: true
-      - key: DEBUG
-        value: "False"
