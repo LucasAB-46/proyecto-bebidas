@@ -5,7 +5,6 @@
     "dockerfilePath": "backend/Dockerfile"
   },
   "deploy": {
-    "startCommand": "gunicorn core.wsgi --bind 0.0.0.0:$PORT",
     "healthcheckPath": "/api/health",
     "healthcheckTimeout": 120
   }
