@@ -11,19 +11,18 @@ WORKDIR /app
 # Instalar dependencias del sistema
 RUN apt-get update && apt-get install -y libpq-dev gcc && rm -rf /var/lib/apt/lists/*
 
-# --- PRUEBA NUCLEAR: Instalar paquetes críticos DIRECTAMENTE ---
-# Esto bypassa por completo el requirements.txt para forzar la instalación.
-RUN pip install Django djangorestframework gunicorn dj-database-url psycopg2-binary whitenoise
-
-# Copiar el resto de los requerimientos (aunque los más importantes ya están instalados)
+# --- CORRECCIÓN DE RUTA ---
+# Copiamos el archivo de requerimientos desde el contexto actual
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el código de la aplicación
+# --- CORRECCIÓN DE RUTA ---
+# Copiamos todo el código desde el contexto actual
 COPY . .
 
-# Copiar y dar permisos al script de entrada
-COPY ./entrypoint.sh /entrypoint.sh
+# --- CORRECCIÓN DE RUTA ---
+# Copiamos el script de entrada desde el contexto actual
+COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Punto de entrada
