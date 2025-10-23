@@ -9,11 +9,7 @@ services:
     rootDir: backend
     plan: free
     
-    # --- PRUEBA FINAL: AISLAR MIGRATE ---
-    # Ejecutamos ÚNICA Y EXCLUSIVAMENTE el comando de migración.
-    # Si esto funciona, el problema es collectstatic.
-    # Si esto falla, nos dará el error final y definitivo.
-    preDeployCommand: "python manage.py migrate"
+    # El preDeployCommand se elimina. Su lógica ahora vive en el entrypoint.sh.
     
     dockerCommand: "gunicorn core.wsgi --bind 0.0.0.0:$PORT"
     
