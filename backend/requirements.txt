@@ -5,6 +5,7 @@ gunicorn
 dj-database-url
 psycopg2-binary
 whitenoise==6.11.0
+django-extensions  # <--- LÍNEA AÑADIDA
 
 # --- Core de Django y DRF ---
 Django==5.2
