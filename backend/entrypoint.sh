@@ -1,12 +1,15 @@
-#!/bin/sh
-
-# Salir inmediatamente si un comando falla
+#!/usr/bin/env bash
 set -e
 
-echo "--- Ejecutando migraciones de la base de datos... ---"
-python manage.py migrate
+echo "--- Chequeando variables ---"
+: "${DJANGO_SECRET_KEY:?Falta DJANGO_SECRET_KEY}"
+# DATABASE_URL es opcional en dev/local (SQLite). En Railway suele existir.
 
-echo "--- Migraciones completadas. Iniciando servidor... ---"
+echo "--- Ejecutando migraciones ---"
+python manage.py migrate --noinput
 
-# Ejecuta el comando principal que se le pase al script (será gunicorn)
+echo "--- Recolectando estáticos ---"
+python manage.py collectstatic --noinput || true
+
+echo "--- Iniciando servidor ---"
 exec "$@"

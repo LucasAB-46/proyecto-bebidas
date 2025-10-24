@@ -1,30 +1,37 @@
-# backend/core/settings.py
 from pathlib import Path
 import os
-import dj_database_url
 from datetime import timedelta
+import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Esta es la forma correcta de detectar si estamos en Render.
-IS_RENDER = 'RENDER' in os.environ
+# === Runtime flags ===
+DEBUG = os.getenv("DEBUG", "False").strip().lower() == "true"
 
-# Render inyectará esta variable. Si no existe, os.getenv devuelve None y Django fallará con un error claro.
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
+if not SECRET_KEY and not DEBUG:
+    raise RuntimeError("Falta DJANGO_SECRET_KEY en variables de entorno")
 
-# DEBUG es Falso solo si estamos en Render.
-DEBUG = not IS_RENDER
+def env_list(name: str, default=None):
+    val = os.getenv(name)
+    if not val:
+        return default or []
+    return [x.strip() for x in val.split(",") if x.strip()]
 
-ALLOWED_HOSTS = []
-if IS_RENDER:
-    # Obtenemos el hostname que Render nos asigna.
-    RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
-    if RENDER_EXTERNAL_HOSTNAME:
-        ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
-else:
-    # Hosts para desarrollo local
-    ALLOWED_HOSTS.append('127.0.0.1')
-    ALLOWED_HOSTS.append('localhost')
+# === Hosts / CSRF / CORS ===
+DEFAULT_HOSTS = ["127.0.0.1", "localhost"] if DEBUG else ["*"]
+ALLOWED_HOSTS = env_list("APP_ALLOWED_HOSTS", DEFAULT_HOSTS)
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+CSRF_TRUSTED_ORIGINS = env_list("APP_CSRF_TRUSTED_ORIGINS", [])
+
+CORS_ALLOWED_ORIGINS = env_list("APP_CORS_ALLOW_ORIGINS", [])
+if DEBUG and not CORS_ALLOWED_ORIGINS:
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
 INSTALLED_APPS = [
     "core_app",
@@ -40,7 +47,6 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "drf_spectacular",
     "django_filters",
-    "django_extensions",
     "corsheaders",
     # Propias
     "catalogo",
@@ -48,9 +54,16 @@ INSTALLED_APPS = [
     "ventas",
 ]
 
+# Solo en dev si está instalado
+if DEBUG:
+    try:
+        import django_extensions  # noqa: F401
+        INSTALLED_APPS.append("django_extensions")
+    except Exception:
+        pass
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    # WhiteNoise Middleware - ¡La posición es importante!
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
@@ -81,18 +94,16 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "core.wsgi.application"
 
-# --- CONFIGURACIÓN DE BASE DE DATOS A PRUEBA DE FALLOS ---
-if IS_RENDER:
-    # En producción, usamos la DATABASE_URL de Render con SSL.
+# DB: usa DATABASE_URL si existe; si no, SQLite local
+if os.getenv("DATABASE_URL"):
     DATABASES = {
-        'default': dj_database_url.config(conn_max_age=600, ssl_require=True)
+        "default": dj_database_url.config(conn_max_age=600, ssl_require=True)
     }
 else:
-    # En desarrollo, usamos un archivo local de SQLite.
     DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
         }
     }
 
@@ -103,9 +114,9 @@ TIME_ZONE = "America/Argentina/Buenos_Aires"
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = "static/"
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STATIC_URL = "/static/"
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -113,7 +124,11 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ("rest_framework_simplejwt.authentication.JWTAuthentication",),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend", "rest_framework.filters.SearchFilter", "rest_framework.filters.OrderingFilter"],
+    "DEFAULT_FILTER_BACKENDS": [
+        "django_filters.rest_framework.DjangoFilterBackend",
+        "rest_framework.filters.SearchFilter",
+        "rest_framework.filters.OrderingFilter",
+    ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 25,
 }
@@ -127,16 +142,3 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "API – Bebidas",
     "VERSION": "0.1.0",
 }
-
-# --- Configuración de CORS ---
-CORS_ALLOWED_ORIGINS = []
-if IS_RENDER:
-    RENDER_FRONTEND_URL = os.environ.get('RENDER_EXTERNAL_URL')
-    if RENDER_FRONTEND_URL:
-        CORS_ALLOWED_origins.append(RENDER_FRONTEND_URL)
-
-if not IS_RENDER:
-    CORS_ALLOWED_ORIGINS.append("http://localhost:5173")
-
-CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_HEADERS = ["accept", "authorization", "content-type", "user-agent", "x-csrftoken", "x-requested-with", "x-local-id"]
