@@ -7,6 +7,7 @@ echo "--- Chequeando variables ---"
 
 echo "--- Ejecutando migraciones ---"
 python manage.py migrate --noinput
+python manage.py createsuperuser --noinput || true
 
 echo "--- Recolectando estáticos ---"
 python manage.py collectstatic --noinput || true
