@@ -1,3 +1,5 @@
+// frontend/src/pages/ResumenDeVenta.jsx
+
 export default function ResumenDeVenta({
   total,
   loading,

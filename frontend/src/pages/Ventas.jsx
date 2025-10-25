@@ -1,3 +1,4 @@
+// frontend/src/pages/Ventas.jsx
 import { useEffect, useState } from "react";
 import { createSale, confirmSale, annulSale } from "../services/sales.js";
 import { fetchProductos } from "../services/products.js";
@@ -16,14 +17,11 @@ export default function Ventas() {
 
   // ---------------- carga inicial productos ----------------
   useEffect(() => {
-    // traemos productos sólo una vez
     fetchProductos({ search: "", page_size: 100 })
       .then((res) => {
-        // el backend devuelve { results: [...] } o lista directa según tu endpoint
         const data = Array.isArray(res.data.results)
           ? res.data.results
           : res.data;
-
         setProductos(data || []);
       })
       .catch((err) => {
@@ -33,7 +31,7 @@ export default function Ventas() {
   }, []);
 
   // ---------------- helpers carrito ----------------
-  // busca producto por texto (enter) y lo agrega con cantidad 1
+
   const handleBuscarKeyDown = (e) => {
     if (e.key === "Enter") {
       const term = busqueda.trim().toLowerCase();
@@ -54,7 +52,6 @@ export default function Ventas() {
 
   const agregarAlCarrito = (prod) => {
     setCarrito((prev) => {
-      // si ya está en carrito, sumo 1
       const idx = prev.findIndex((r) => r.id === prod.id);
       if (idx !== -1) {
         const updated = [...prev];
@@ -64,7 +61,6 @@ export default function Ventas() {
         updated[idx] = row;
         return updated;
       }
-      // si no está, lo agrego
       return [
         ...prev,
         {
@@ -102,8 +98,7 @@ export default function Ventas() {
   const totalVenta = carrito.reduce((acc, it) => acc + it.subtotal, 0);
 
   // ---------------- flujo venta ----------------
-  // 1. crea la venta borrador en /ventas/
-  // 2. confirma en /ventas/{id}/confirmar/
+
   const confirmarVentaHandler = async () => {
     if (!carrito.length) {
       alert("Agregá productos antes de confirmar.");
@@ -112,8 +107,6 @@ export default function Ventas() {
 
     setLoadingVenta(true);
     try {
-      // armo payload tal como lo espera el backend
-      // detalles: [{producto, cantidad, precio_unitario}]
       const payload = {
         fecha: new Date().toISOString(),
         detalles: carrito.map((item, idx) => ({
@@ -124,29 +117,26 @@ export default function Ventas() {
         })),
       };
 
-      // 1) creo
+      // crear venta
       const crearResp = await createSale(payload);
-      const ventaCreada = crearResp.data; // debería tener {id, estado, total, ...}
+      const ventaCreada = crearResp.data;
       const ventaId = ventaCreada.id;
 
-      // 2) confirmo
+      // confirmar venta
       const confirmarResp = await confirmSale(ventaId);
       const ventaConfirmada = confirmarResp.data;
 
-      // guardo como últimaVenta para el panel resumen
       setUltimaVenta({
         id: ventaConfirmada.id,
         estado: ventaConfirmada.estado,
         total: ventaConfirmada.total,
       });
 
-      // limpio carrito
       setCarrito([]);
 
       alert("¡Venta confirmada con éxito!");
     } catch (err) {
       console.error("Error confirmando venta", err);
-      // si backend devolvió mensaje legible:
       const msg =
         err.response?.data?.detail ||
         err.response?.data?.estado ||
@@ -157,7 +147,6 @@ export default function Ventas() {
     }
   };
 
-  // anular última venta confirmada
   const anularUltimaVenta = async () => {
     if (!ultimaVenta || !ultimaVenta.id) return;
     if (!window.confirm("¿Seguro que querés anular la última venta?")) return;
