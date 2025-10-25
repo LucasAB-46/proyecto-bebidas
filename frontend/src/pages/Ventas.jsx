@@ -1,81 +1,74 @@
 // src/pages/Ventas.jsx
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { listProducts } from '../services/products';
-import { createSale, confirmSale, annulSale } from '../services/sales';
+import { listProducts } from '../services/products.js';
+import { createSale, confirmSale, annulSale } from '../services/sales.js';
 
 export default function Ventas() {
   const nav = useNavigate();
 
-  // --- ESTADOS DE LA VENTA ACTUAL ---
+  // carrito y búsqueda
   const [cart, setCart] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [loadingSearch, setLoadingSearch] = useState(false);
 
+  // estado de venta/errores
   const [processingSale, setProcessingSale] = useState(false);
   const [saleError, setSaleError] = useState(null);
 
-  // Guardamos info de la última venta procesada para permitir "Anular"
-  // Estructura que vamos a guardar:
-  // { id, estado, total }
+  // última venta confirmada (para poder anular rápido)
   const [lastSale, setLastSale] = useState(null);
 
-  // ---------------- BUSCADOR PRODUCTOS ----------------
+  // buscar productos (debounce 300ms)
   useEffect(() => {
     if (searchTerm.length < 3) {
       setSearchResults([]);
       return;
     }
-    const debounceTimeout = setTimeout(async () => {
+
+    const t = setTimeout(async () => {
       setLoadingSearch(true);
       try {
-        const response = await listProducts({ search: searchTerm, page_size: 5 });
-        setSearchResults(response.data.results);
-      } catch (error) {
-        console.error("Error al buscar productos:", error);
+        const resp = await listProducts({ search: searchTerm, page_size: 5 });
+        setSearchResults(resp.data.results || []);
+      } catch (err) {
+        console.error("Error al buscar productos:", err);
       } finally {
         setLoadingSearch(false);
       }
     }, 300);
-    return () => clearTimeout(debounceTimeout);
+
+    return () => clearTimeout(t);
   }, [searchTerm]);
 
-  // ---------------- CARRITO ----------------
+  // helpers carrito
   const addToCart = (product) => {
-    setCart(currentCart => {
-      const existingProduct = currentCart.find(item => item.id === product.id);
-      if (existingProduct) {
-        return currentCart.map(item =>
-          item.id === product.id
-            ? { ...item, cantidad: item.cantidad + 1 }
-            : item
+    setCart(prev => {
+      const found = prev.find(i => i.id === product.id);
+      if (found) {
+        return prev.map(i =>
+          i.id === product.id ? { ...i, cantidad: i.cantidad + 1 } : i
         );
-      } else {
-        return [
-          ...currentCart,
-          { ...product, cantidad: 1 }
-        ];
       }
+      return [...prev, { ...product, cantidad: 1 }];
     });
     setSearchTerm('');
     setSearchResults([]);
   };
 
-  const updateQuantity = (productId, newQuantity) => {
-    setCart(currentCart => {
-      if (newQuantity <= 0) {
-        return currentCart.filter(item => item.id !== productId);
+  const updateQuantity = (id, nuevaCantidad) => {
+    setCart(prev => {
+      if (nuevaCantidad <= 0) {
+        return prev.filter(i => i.id !== id);
       }
-      return currentCart.map(item =>
-        item.id === productId
-          ? { ...item, cantidad: newQuantity }
-          : item
+      return prev.map(i =>
+        i.id === id ? { ...i, cantidad: nuevaCantidad } : i
       );
     });
   };
 
+  // total calculado
   const totalVenta = useMemo(() => {
     return cart.reduce((total, item) => {
       const unit = parseFloat(item.precio_venta || 0);
@@ -83,59 +76,51 @@ export default function Ventas() {
     }, 0);
   }, [cart]);
 
-  // ---------------- CONFIRMAR VENTA ----------------
+  // confirmar venta
   const handleConfirmSale = async () => {
     setProcessingSale(true);
     setSaleError(null);
 
     try {
-      // 1) armar payload para crear venta (BORRADOR)
-      const saleDetails = cart.map(item => ({
+      // armo los renglones para el backend
+      const detalles = cart.map(item => ({
         producto: item.id,
         cantidad: item.cantidad,
         precio_unitario: item.precio_venta,
       }));
 
-      const payload = {
-        detalles: saleDetails,
-      };
+      // 1) crear venta en borrador
+      const created = await createSale({ detalles });
+      const saleId = created.data.id;
 
-      // 2) crear venta
-      const createdSaleResponse = await createSale(payload);
-      const saleId = createdSaleResponse.data.id;
+      // 2) confirmar
+      const confirmed = await confirmSale(saleId);
 
-      // 3) confirmar venta
-      const confirmedSaleResponse = await confirmSale(saleId);
-
-      // respuesta confirmada
-      const confirmedData = confirmedSaleResponse.data;
-
-      // 4) éxito
       alert("¡Venta confirmada con éxito!");
 
-      // guardamos la venta confirmada para poder anularla
+      // guardo esa venta como "última"
       setLastSale({
-        id: confirmedData.id,
-        estado: confirmedData.estado,
-        total: confirmedData.total,
+        id: confirmed.data.id,
+        estado: confirmed.data.estado,
+        total: confirmed.data.total,
       });
 
-      // limpiamos el carrito
+      // limpio carrito
       setCart([]);
 
-    } catch (error) {
-      console.error("Error al confirmar la venta:", error);
-      const errorMessage =
-        error.response?.data?.detail ||
-        error.response?.data?.estado ||
+    } catch (err) {
+      console.error("Error al confirmar la venta:", err);
+      const msg =
+        err.response?.data?.detail ||
+        err.response?.data?.estado ||
         "Ocurrió un error al procesar la venta.";
-      setSaleError(errorMessage);
+      setSaleError(msg);
     } finally {
       setProcessingSale(false);
     }
   };
 
-  // ---------------- ANULAR ÚLTIMA VENTA ----------------
+  // anular última venta
   const handleAnnulLastSale = async () => {
     if (!lastSale || !lastSale.id) {
       alert("No hay venta reciente para anular.");
@@ -152,20 +137,21 @@ export default function Ventas() {
       setSaleError(null);
 
       const annulResp = await annulSale(lastSale.id);
+
       alert(`Venta #${lastSale.id} anulada.`);
 
-      // update estado en memoria
-      setLastSale({
-        ...lastSale,
+      // actualizo estado a ANULADA
+      setLastSale(prev => ({
+        ...prev,
         estado: annulResp.data.estado,
-      });
-    } catch (error) {
-      console.error("Error al anular la venta:", error);
-      const errorMessage =
-        error.response?.data?.detail ||
-        error.response?.data?.estado ||
+      }));
+    } catch (err) {
+      console.error("Error al anular la venta:", err);
+      const msg =
+        err.response?.data?.detail ||
+        err.response?.data?.estado ||
         "No se pudo anular la venta.";
-      setSaleError(errorMessage);
+      setSaleError(msg);
     } finally {
       setProcessingSale(false);
     }
@@ -174,11 +160,11 @@ export default function Ventas() {
   return (
     <div className="container py-4">
       <div className="row g-5">
-        {/* Columna Izquierda: Búsqueda y Carrito */}
+        {/* IZQUIERDA */}
         <div className="col-md-7">
           <h1 className="h4 mb-3">Punto de Venta</h1>
 
-          {/* Buscar Producto */}
+          {/* Buscar */}
           <div className="mb-3">
             <label htmlFor="search-product" className="form-label">
               Buscar Producto
@@ -191,26 +177,28 @@ export default function Ventas() {
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
-            {loadingSearch && <div className="form-text">Buscando...</div>}
+            {loadingSearch && (
+              <div className="form-text">Buscando...</div>
+            )}
           </div>
 
-          {/* Resultados búsqueda */}
+          {/* Resultados */}
           {searchResults.length > 0 && (
             <ul className="list-group mb-4">
-              {searchResults.map(product => (
+              {searchResults.map(p => (
                 <li
-                  key={product.id}
+                  key={p.id}
                   className="list-group-item d-flex justify-content-between align-items-center"
                 >
                   <div>
-                    {product.nombre}{" "}
+                    {p.nombre}{" "}
                     <span className="text-muted">
-                      (${parseFloat(product.precio_venta).toFixed(2)})
+                      (${parseFloat(p.precio_venta).toFixed(2)})
                     </span>
                   </div>
                   <button
                     className="btn btn-sm btn-success"
-                    onClick={() => addToCart(product)}
+                    onClick={() => addToCart(p)}
                   >
                     +
                   </button>
@@ -239,6 +227,7 @@ export default function Ventas() {
                     </td>
                   </tr>
                 )}
+
                 {cart.map(item => (
                   <tr key={item.id}>
                     <td>{item.nombre}</td>
@@ -246,18 +235,21 @@ export default function Ventas() {
                       <input
                         type="number"
                         className="form-control form-control-sm"
-                        value={item.cantidad}
                         min="0"
+                        value={item.cantidad}
                         onChange={(e) =>
-                          updateQuantity(item.id, parseInt(e.target.value, 10))
+                          updateQuantity(
+                            item.id,
+                            parseInt(e.target.value, 10)
+                          )
                         }
                       />
                     </td>
                     <td>${parseFloat(item.precio_venta).toFixed(2)}</td>
                     <td>
                       $
-                      {(parseFloat(item.precio_venta || 0) * item.cantidad)
-                        .toFixed(2)}
+                      {(parseFloat(item.precio_venta || 0) *
+                        item.cantidad).toFixed(2)}
                     </td>
                   </tr>
                 ))}
@@ -266,13 +258,13 @@ export default function Ventas() {
           </div>
         </div>
 
-        {/* Columna Derecha: Resumen y Acciones */}
+        {/* DERECHA */}
         <div className="col-md-5">
           <div className="card shadow-sm">
             <div className="card-body">
               <h2 className="h5 card-title">Resumen de la Venta</h2>
 
-              {/* Error visible */}
+              {/* mensaje error */}
               {saleError && (
                 <div className="alert alert-danger">{saleError}</div>
               )}
@@ -283,7 +275,6 @@ export default function Ventas() {
               </div>
 
               <div className="d-grid gap-2">
-                {/* Confirmar Venta */}
                 <button
                   className="btn btn-primary btn-lg"
                   disabled={cart.length === 0 || processingSale}
@@ -292,7 +283,6 @@ export default function Ventas() {
                   {processingSale ? "Procesando..." : "Confirmar Venta"}
                 </button>
 
-                {/* Limpiar carrito */}
                 <button
                   className="btn btn-outline-danger"
                   disabled={cart.length === 0 || processingSale}
@@ -301,20 +291,23 @@ export default function Ventas() {
                   Cancelar
                 </button>
 
-                {/* Datos venta última operación */}
+                {/* Info última venta + botón anular */}
                 {lastSale && (
                   <div className="alert alert-secondary small mb-0">
                     <div>
                       Última venta: #{lastSale.id} – Estado:{" "}
                       <strong>{lastSale.estado}</strong>
                     </div>
-                    <div>Total: ${parseFloat(lastSale.total || 0).toFixed(2)}</div>
+                    <div>
+                      Total: $
+                      {parseFloat(lastSale.total || 0).toFixed(2)}
+                    </div>
 
-                    {/* Botón Anular */}
                     <button
                       className="btn btn-warning btn-sm mt-2"
                       disabled={
-                        processingSale || lastSale.estado === "ANULADA"
+                        processingSale ||
+                        lastSale.estado === "ANULADA"
                       }
                       onClick={handleAnnulLastSale}
                     >
@@ -324,12 +317,10 @@ export default function Ventas() {
                     </button>
                   </div>
                 )}
-
               </div>
             </div>
           </div>
 
-          {/* Botón para volver a productos, por si querés ajustar precios rápido */}
           <div className="text-center mt-3">
             <button
               className="btn btn-link text-muted"
