@@ -12,11 +12,9 @@ export default function Compras() {
   const [suppliers, setSuppliers] = useState([]);
   const [selectedSupplier, setSelectedSupplier] = useState('');
   const [cart, setCart] = useState([]);
-
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [loadingSearch, setLoadingSearch] = useState(false);
-
   const [error, setError] = useState(null);
   const [processingPurchase, setProcessingPurchase] = useState(false);
 
@@ -34,79 +32,59 @@ export default function Compras() {
     fetchSuppliers();
   }, []);
 
-  // --- BUSCADOR DE PRODUCTOS CON DEBOUNCE ---
+  // --- BUSCADOR DE PRODUCTOS ---
   useEffect(() => {
     if (searchTerm.length < 3) {
       setSearchResults([]);
       return;
     }
-
     const debounceTimeout = setTimeout(async () => {
       setLoadingSearch(true);
       try {
-        const response = await listProducts({
-          search: searchTerm,
-          page_size: 5,
-        });
+        const response = await listProducts({ search: searchTerm, page_size: 5 });
         setSearchResults(response.data.results);
-      } catch (err) {
-        console.error("Error al buscar productos:", err);
+      } catch (error) {
+        console.error("Error al buscar productos:", error);
       } finally {
         setLoadingSearch(false);
       }
     }, 300);
-
     return () => clearTimeout(debounceTimeout);
   }, [searchTerm]);
 
-  // --- CARRITO DE COMPRA ---
+  // --- CARRITO ---
   const addToCart = (product) => {
     setCart(currentCart => {
-      const existingProduct = currentCart.find(item => item.id === product.id);
-      if (existingProduct) {
+      const existing = currentCart.find(item => item.id === product.id);
+      if (existing) {
         return currentCart.map(item =>
           item.id === product.id
             ? { ...item, cantidad: item.cantidad + 1 }
             : item
         );
       } else {
-        return [
-          ...currentCart,
-          {
-            ...product,
-            cantidad: 1,
-            costo_unitario: 0,
-          },
-        ];
+        return [...currentCart, { ...product, cantidad: 1, costo_unitario: 0 }];
       }
     });
-
     setSearchTerm('');
     setSearchResults([]);
   };
 
   const updateCartItem = (productId, field, value) => {
     setCart(currentCart => {
-      const rawValue = value === '' ? 0 : value;
-      const newValue = (field === 'costo_unitario')
-        ? parseFloat(rawValue)
-        : parseInt(rawValue, 10);
-
-      if (field === 'cantidad' && newValue <= 0) {
-        return currentCart.filter(item => item.id !== productId);
-      }
-
-      return currentCart.map(item =>
+      const safeValue = value === '' ? 0 : Number(value);
+      const newCart = currentCart.map(item =>
         item.id === productId
-          ? { ...item, [field]: newValue }
+          ? { ...item, [field]: isNaN(safeValue) ? 0 : safeValue }
           : item
       );
+      return newCart;
     });
   };
 
   const totalCompra = useMemo(() => {
     return cart.reduce(
-      (total, item) => total + (item.costo_unitario * item.cantidad),
+      (total, item) => total + ((item.costo_unitario || 0) * (item.cantidad || 0)),
       0
     );
   }, [cart]);
@@ -116,7 +94,6 @@ export default function Compras() {
     setProcessingPurchase(true);
     setError(null);
 
-    // validación rápida
     if (!selectedSupplier || cart.length === 0) {
       setError("Debe seleccionar un proveedor y añadir al menos un producto.");
       setProcessingPurchase(false);
@@ -124,44 +101,40 @@ export default function Compras() {
     }
 
     try {
-      // Armamos cada renglón como lo espera el backend
       const purchaseDetails = cart.map(item => ({
         producto: item.id,
-        cantidad: item.cantidad,
-        costo_unitario: item.costo_unitario,
+        cantidad: Number(item.cantidad) || 0,
+        costo_unitario: Number(item.costo_unitario) || 0,
       }));
 
-      const payload = {
-        proveedor: selectedSupplier,
-        detalles: purchaseDetails,
-      };
+      // validación manual en frontend
+      if (purchaseDetails.some(d => d.cantidad <= 0 || d.costo_unitario <= 0)) {
+        setError("Todos los productos deben tener cantidad y costo mayores a 0.");
+        setProcessingPurchase(false);
+        return;
+      }
 
-      // 1) Crear compra BORRADOR
+      const payload = { proveedor: selectedSupplier, detalles: purchaseDetails };
+
       const createdPurchaseResponse = await createPurchase(payload);
       const purchaseId = createdPurchaseResponse.data.id;
 
-      // 2) Confirmar compra (esto suma stock en backend)
       await confirmPurchase(purchaseId);
 
-      // 3) Limpiar UI
+      alert("Compra confirmada con éxito. El stock fue actualizado.");
       setCart([]);
       setSelectedSupplier('');
-
-      // 4) Mandar a /productos para ver stock actualizado
       nav("/productos", {
         replace: true,
         state: { success: "Compra registrada con éxito. Stock actualizado." },
       });
-
     } catch (err) {
       console.error("Error al confirmar la compra:", err);
-
       const apiDetail =
         err.response?.data?.detail ||
         JSON.stringify(err.response?.data) ||
         err.message ||
         "Error desconocido";
-
       setError("Ocurrió un error al procesar la compra: " + apiDetail);
     } finally {
       setProcessingPurchase(false);
@@ -171,18 +144,13 @@ export default function Compras() {
   return (
     <div className="container py-4">
       <h1 className="h4 mb-4">Registrar Ingreso de Mercadería</h1>
-
-      {error && (
-        <div className="alert alert-danger">{error}</div>
-      )}
+      {error && <div className="alert alert-danger">{error}</div>}
 
       <div className="card p-4">
-        {/* Proveedor */}
+        {/* Selección de proveedor */}
         <div className="row mb-3">
           <div className="col-md-6">
-            <label htmlFor="supplier-select" className="form-label">
-              Proveedor
-            </label>
+            <label htmlFor="supplier-select" className="form-label">Proveedor</label>
             <select
               id="supplier-select"
               className="form-select"
@@ -190,21 +158,17 @@ export default function Compras() {
               onChange={(e) => setSelectedSupplier(e.target.value)}
             >
               <option value="">Seleccione un proveedor</option>
-              {suppliers.map(supplier => (
-                <option key={supplier.id} value={supplier.id}>
-                  {supplier.nombre}
-                </option>
+              {suppliers.map(s => (
+                <option key={s.id} value={s.id}>{s.nombre}</option>
               ))}
             </select>
           </div>
         </div>
 
-        {/* Buscador de producto */}
+        {/* Buscar producto */}
         <div className="row mb-3">
           <div className="col-md-6">
-            <label htmlFor="search-product" className="form-label">
-              Buscar Producto a Ingresar
-            </label>
+            <label htmlFor="search-product" className="form-label">Buscar Producto a Ingresar</label>
             <input
               type="text"
               id="search-product"
@@ -214,9 +178,7 @@ export default function Compras() {
               onChange={(e) => setSearchTerm(e.target.value)}
               disabled={!selectedSupplier}
             />
-            {loadingSearch && (
-              <div className="form-text">Buscando...</div>
-            )}
+            {loadingSearch && <div className="form-text">Buscando...</div>}
             {!selectedSupplier && (
               <div className="form-text text-warning">
                 Debe seleccionar un proveedor primero.
@@ -225,27 +187,22 @@ export default function Compras() {
           </div>
         </div>
 
-        {/* Resultados de búsqueda */}
+        {/* Resultados */}
         {searchResults.length > 0 && (
           <ul className="list-group mb-4">
-            {searchResults.map(product => (
-              <li
-                key={product.id}
-                className="list-group-item d-flex justify-content-between align-items-center"
-              >
-                {product.nombre}
+            {searchResults.map(p => (
+              <li key={p.id} className="list-group-item d-flex justify-content-between align-items-center">
+                {p.nombre}
                 <button
                   className="btn btn-sm btn-success"
-                  onClick={() => addToCart(product)}
-                >
-                  +
-                </button>
+                  onClick={() => addToCart(p)}
+                >+</button>
               </li>
             ))}
           </ul>
         )}
 
-        {/* Tabla de la compra */}
+        {/* Carrito */}
         <h2 className="h5 mt-4">Items de la Compra</h2>
         <div className="table-responsive">
           <table className="table">
@@ -259,16 +216,8 @@ export default function Compras() {
             </thead>
             <tbody>
               {cart.length === 0 && (
-                <tr>
-                  <td
-                    colSpan="4"
-                    className="text-center text-muted"
-                  >
-                    Añada productos a la compra
-                  </td>
-                </tr>
+                <tr><td colSpan="4" className="text-center text-muted">Añada productos a la compra</td></tr>
               )}
-
               {cart.map(item => (
                 <tr key={item.id}>
                   <td>{item.nombre}</td>
@@ -276,15 +225,9 @@ export default function Compras() {
                     <input
                       type="number"
                       className="form-control form-control-sm"
-                      value={item.cantidad}
                       min="0"
-                      onChange={(e) =>
-                        updateCartItem(
-                          item.id,
-                          'cantidad',
-                          e.target.value
-                        )
-                      }
+                      value={isNaN(item.cantidad) ? '' : item.cantidad}
+                      onChange={(e) => updateCartItem(item.id, 'cantidad', e.target.value)}
                     />
                   </td>
                   <td>
@@ -292,59 +235,38 @@ export default function Compras() {
                       type="number"
                       step="0.01"
                       className="form-control form-control-sm"
-                      value={item.costo_unitario}
                       min="0"
-                      onChange={(e) =>
-                        updateCartItem(
-                          item.id,
-                          'costo_unitario',
-                          e.target.value
-                        )
-                      }
+                      value={isNaN(item.costo_unitario) ? '' : item.costo_unitario}
+                      onChange={(e) => updateCartItem(item.id, 'costo_unitario', e.target.value)}
                     />
                   </td>
-                  <td>
-                    ${(
-                      item.costo_unitario *
-                      item.cantidad
-                    ).toFixed(2)}
-                  </td>
+                  <td>${((item.costo_unitario || 0) * (item.cantidad || 0)).toFixed(2)}</td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
               <tr className="fw-bold">
-                <td colSpan="3" className="text-end">
-                  TOTAL
-                </td>
+                <td colSpan="3" className="text-end">TOTAL</td>
                 <td>${totalCompra.toFixed(2)}</td>
               </tr>
             </tfoot>
           </table>
         </div>
 
-        {/* Botones finales */}
         <div className="d-flex justify-content-end mt-4">
           <button
             className="btn btn-outline-secondary me-2"
-            disabled={processingPurchase}
             onClick={() => setCart([])}
+            disabled={processingPurchase}
           >
             Limpiar
           </button>
-
           <button
             className="btn btn-primary"
-            disabled={
-              cart.length === 0 ||
-              !selectedSupplier ||
-              processingPurchase
-            }
+            disabled={cart.length === 0 || !selectedSupplier || processingPurchase}
             onClick={handleConfirmPurchase}
           >
-            {processingPurchase
-              ? "Procesando..."
-              : "Confirmar Compra"}
+            {processingPurchase ? "Procesando..." : "Confirmar Compra"}
           </button>
         </div>
       </div>
