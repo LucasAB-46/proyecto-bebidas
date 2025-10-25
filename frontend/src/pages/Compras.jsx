@@ -1,43 +1,34 @@
 import { useEffect, useState } from "react";
-import { fetchProductos } from "../services/products.js";
+import { fetchProductos, listSuppliers } from "../services/products.js";
 import {
   createPurchase,
   confirmPurchase,
   annulPurchase,
 } from "../services/purchases.js";
 
-// helper de búsqueda (mismo concepto que en Ventas)
+// ---- búsqueda de productos (local + fallback remoto) ----
 async function buscarProductoPorTerm(term, productosCache) {
   const t = term.trim().toLowerCase();
   if (!t) return null;
 
-  // 1) busco local
-  const candidatosLocales = productosCache.filter((p) => {
+  // 1) buscar en cache local
+  const matchLocal = productosCache.find((p) => {
     const nombreOk = p.nombre?.toLowerCase().includes(t);
     const codigoOk = String(p.codigo || "").toLowerCase().includes(t);
     const barcodeOk = String(p.codigo_barras || p.barcode || "")
       .toLowerCase()
       .includes(t);
-
     return nombreOk || codigoOk || barcodeOk;
   });
+  if (matchLocal) return matchLocal;
 
-  if (candidatosLocales.length > 0) {
-    return candidatosLocales[0];
-  }
-
-  // 2) remoto fallback
+  // 2) fallback remoto
   try {
-    const resp = await fetchProductos({
-      search: term,
-      page_size: 10,
-    });
+    const resp = await fetchProductos({ search: term, page_size: 10 });
     const data = Array.isArray(resp.data.results)
       ? resp.data.results
       : resp.data;
-    if (data && data.length > 0) {
-      return data[0];
-    }
+    if (data && data.length > 0) return data[0];
   } catch (e) {
     console.error("buscarProductoPorTerm fallback compras", e);
   }
@@ -46,28 +37,32 @@ async function buscarProductoPorTerm(term, productosCache) {
 }
 
 export default function Compras() {
-  // ---------------- state ----------------
-  const [busqueda, setBusqueda] = useState("");
+  // -------- state global --------
   const [productos, setProductos] = useState([]);
+  const [proveedores, setProveedores] = useState([]);
 
-  // carrito de compra: [{id, nombre, cantidad, costo_unitario, bonif, impuestos, subtotal}]
+  // elección usuario
+  const [proveedorId, setProveedorId] = useState("");
+  const [busqueda, setBusqueda] = useState("");
+
+  // carrito de compra
+  // [{id, nombre, cantidad, costo_unitario, bonif, impuestos, subtotal}]
   const [carrito, setCarrito] = useState([]);
 
-  // totales calculados
+  // totales
   const [subtotal, setSubtotal] = useState(0);
   const [totalImp, setTotalImp] = useState(0);
   const [totalBonif, setTotalBonif] = useState(0);
   const [totalFinal, setTotalFinal] = useState(0);
 
-  // control proceso
+  // control proceso / feedback UI
   const [loadingCompra, setLoadingCompra] = useState(false);
-
-  // panel "última compra"
-  const [ultimaCompra, setUltimaCompra] = useState(null); // {id, estado, total}
+  const [ultimaCompra, setUltimaCompra] = useState(null); // {id, estado, total, proveedor_nombre?}
   const [anulando, setAnulando] = useState(false);
 
-  // ---------------- cargar productos una vez ----------------
+  // -------- carga inicial: productos + proveedores --------
   useEffect(() => {
+    // productos (stock actual, precios base, etc.)
     fetchProductos({ search: "", page_size: 100 })
       .then((res) => {
         const data = Array.isArray(res.data.results)
@@ -79,9 +74,23 @@ export default function Compras() {
         console.error("Error cargando productos (Compras)", err);
         alert("No se pudieron cargar productos para Compras.");
       });
+
+    // proveedores
+    listSuppliers()
+      .then((res) => {
+        const data = Array.isArray(res.data.results)
+          ? res.data.results
+          : res.data;
+        setProveedores(data || []);
+        // No autoselecciono. Que el usuario elija.
+      })
+      .catch((err) => {
+        console.error("Error cargando proveedores", err);
+        alert("No se pudieron cargar los proveedores.");
+      });
   }, []);
 
-  // ---------------- recálculo de totales ----------------
+  // -------- recálculo autom. de totales --------
   useEffect(() => {
     let sub = 0;
     let imp = 0;
@@ -93,33 +102,41 @@ export default function Compras() {
       bon += item.bonif;
     });
 
-    const total = sub - bon + imp;
-
     setSubtotal(sub);
     setTotalImp(imp);
     setTotalBonif(bon);
-    setTotalFinal(total);
+    setTotalFinal(sub - bon + imp);
   }, [carrito]);
 
-  // ---------------- helpers carrito ----------------
+  // -------- helpers carrito --------
   const agregarAlCarrito = (prod) => {
-    // costo base editable
     const costoBase = Number(
-      prod.precio_costo ?? prod.costo ?? prod.precio_venta ?? prod.precio ?? 0
+      prod.precio_costo ??
+        prod.costo ??
+        prod.precio_venta ??
+        prod.precio ??
+        0
     );
 
     setCarrito((prev) => {
-      const idx = prev.findIndex((r) => r.id === prod.id);
-      if (idx !== -1) {
-        const updated = [...prev];
-        const row = { ...updated[idx] };
-        row.cantidad = row.cantidad + 1;
-        row.subtotal =
-          row.cantidad * row.costo_unitario - row.bonif + row.impuestos;
-        updated[idx] = row;
-        return updated;
+      const found = prev.find((r) => r.id === prod.id);
+      if (found) {
+        // si ya existe en carrito, sumar 1
+        return prev.map((row) =>
+          row.id === prod.id
+            ? {
+                ...row,
+                cantidad: row.cantidad + 1,
+                subtotal:
+                  (row.cantidad + 1) * row.costo_unitario -
+                  row.bonif +
+                  row.impuestos,
+              }
+            : row
+        );
       }
 
+      // si no existe, agregarlo
       return [
         ...prev,
         {
@@ -137,12 +154,10 @@ export default function Compras() {
 
   const handleBuscarKeyDown = async (e) => {
     if (e.key !== "Enter") return;
-
     const term = busqueda.trim();
     if (!term) return;
 
     const prod = await buscarProductoPorTerm(term, productos);
-
     if (!prod) {
       alert("Producto no encontrado.");
       return;
@@ -152,57 +167,65 @@ export default function Compras() {
     setBusqueda("");
   };
 
-  const actualizarItem = (idProd, field, rawValue) => {
+  const actualizarItem = (idProd, field, valueRaw) => {
     setCarrito((prev) =>
       prev.map((item) => {
         if (item.id !== idProd) return item;
 
-        let valNum;
+        const n = Number(valueRaw);
 
-        if (field === "cantidad") {
-          valNum = Number(rawValue);
-          if (valNum < 1 || Number.isNaN(valNum)) valNum = 1;
-          return {
-            ...item,
-            cantidad: valNum,
-            subtotal:
-              valNum * item.costo_unitario - item.bonif + item.impuestos,
-          };
+        switch (field) {
+          case "cantidad": {
+            const cantidad = !Number.isNaN(n) && n > 0 ? n : 1;
+            return {
+              ...item,
+              cantidad,
+              subtotal:
+                cantidad * item.costo_unitario -
+                item.bonif +
+                item.impuestos,
+            };
+          }
+
+          case "costo_unitario": {
+            const costo = !Number.isNaN(n) && n >= 0 ? n : 0;
+            return {
+              ...item,
+              costo_unitario: costo,
+              subtotal:
+                item.cantidad * costo -
+                item.bonif +
+                item.impuestos,
+            };
+          }
+
+          case "bonif": {
+            const bonif = !Number.isNaN(n) && n >= 0 ? n : 0;
+            return {
+              ...item,
+              bonif,
+              subtotal:
+                item.cantidad * item.costo_unitario -
+                bonif +
+                item.impuestos,
+            };
+          }
+
+          case "impuestos": {
+            const impuestos = !Number.isNaN(n) && n >= 0 ? n : 0;
+            return {
+              ...item,
+              impuestos,
+              subtotal:
+                item.cantidad * item.costo_unitario -
+                item.bonif +
+                impuestos,
+            };
+          }
+
+          default:
+            return item;
         }
-
-        if (field === "costo_unitario") {
-          valNum = Number(rawValue);
-          if (valNum < 0 || Number.isNaN(valNum)) valNum = 0;
-          return {
-            ...item,
-            costo_unitario: valNum,
-            subtotal: item.cantidad * valNum - item.bonif + item.impuestos,
-          };
-        }
-
-        if (field === "bonif") {
-          valNum = Number(rawValue);
-          if (valNum < 0 || Number.isNaN(valNum)) valNum = 0;
-          return {
-            ...item,
-            bonif: valNum,
-            subtotal:
-              item.cantidad * item.costo_unitario - valNum + item.impuestos,
-          };
-        }
-
-        if (field === "impuestos") {
-          valNum = Number(rawValue);
-          if (valNum < 0 || Number.isNaN(valNum)) valNum = 0;
-          return {
-            ...item,
-            impuestos: valNum,
-            subtotal:
-              item.cantidad * item.costo_unitario - item.bonif + valNum,
-          };
-        }
-
-        return item;
       })
     );
   };
@@ -211,16 +234,30 @@ export default function Compras() {
     setCarrito((prev) => prev.filter((it) => it.id !== idProd));
   };
 
-  // ---------------- flujo compra ----------------
+  // -------- flujo compra DEFINITIVO --------
   const confirmarCompraHandler = async () => {
     if (!carrito.length) {
       alert("Agregá productos antes de confirmar la compra.");
       return;
     }
+    if (!proveedorId) {
+      alert("Seleccioná un proveedor antes de confirmar.");
+      return;
+    }
 
     setLoadingCompra(true);
     try {
+      // Payload 100% alineado al backend (CompraWriteSerializer):
+      // - proveedor (FK)
+      // - fecha
+      // - detalles -> [ {producto, cantidad, costo_unitario, bonif, impuestos, renglon} ... ]
+      //
+      // local_id NO lo mandamos desde el front:
+      //   la ViewSet lo obtiene del header X-Local-ID que YA mandamos en api/client.jsx
+      //   y hace serializer.save(local_id=eseLocal).
+      //
       const payload = {
+        proveedor: Number(proveedorId),
         fecha: new Date().toISOString(),
         detalles: carrito.map((item, idx) => ({
           producto: item.id,
@@ -232,24 +269,30 @@ export default function Compras() {
         })),
       };
 
-      // 1) crear borrador
+      // 1) crear compra en estado BORRADOR
       const crearResp = await createPurchase(payload);
-      const compraCreada = crearResp.data;
+      const compraCreada = crearResp.data; // {id, estado: "borrador", ...}
       const compraId = compraCreada.id;
 
-      // 2) confirmar
+      // 2) confirmar compra (esto actualiza stock y marca estado=CONFIRMADA)
       const confirmarResp = await confirmPurchase(compraId);
       const compraConfirmada = confirmarResp.data;
 
+      // persistimos para mostrar en panel
       setUltimaCompra({
         id: compraConfirmada.id,
         estado: compraConfirmada.estado,
         total: compraConfirmada.total,
+        proveedor_nombre:
+          compraConfirmada.proveedor_nombre ||
+          compraConfirmada.proveedor ||
+          proveedorId,
       });
 
+      // limpiamos carrito
       setCarrito([]);
 
-      alert("¡Compra confirmada con éxito!");
+      alert("Compra confirmada con éxito. El stock fue actualizado.");
     } catch (err) {
       console.error("Error confirmando compra", err);
       const msg =
@@ -268,8 +311,9 @@ export default function Compras() {
       !window.confirm(
         "¿Seguro que querés anular la última compra? Esto revertirá el stock."
       )
-    )
+    ) {
       return;
+    }
 
     setAnulando(true);
     try {
@@ -279,6 +323,10 @@ export default function Compras() {
         id: compraAnulada.id,
         estado: compraAnulada.estado,
         total: compraAnulada.total,
+        proveedor_nombre:
+          compraAnulada.proveedor_nombre ||
+          compraAnulada.proveedor ||
+          ultimaCompra.proveedor_nombre,
       });
     } catch (err) {
       console.error("Error anulando compra", err);
@@ -291,30 +339,54 @@ export default function Compras() {
     }
   };
 
-  // ---------------- render ----------------
+  // -------- render --------
   return (
     <div className="container mt-4">
       <h1 className="mb-4">Ingreso de Compras</h1>
 
-      {/* BUSCADOR */}
+      {/* PROVEEDOR (dato obligatorio de negocio) */}
       <div className="mb-3">
-        <label className="form-label fw-bold">Buscar Producto</label>
+        <label className="form-label fw-bold">Proveedor</label>
+        <select
+          className="form-select form-select-lg"
+          value={proveedorId}
+          onChange={(e) => setProveedorId(e.target.value)}
+        >
+          <option value="">Seleccione un proveedor...</option>
+          {proveedores.map((prov) => (
+            <option key={prov.id} value={prov.id}>
+              {prov.nombre}
+            </option>
+          ))}
+        </select>
+        {!proveedorId && (
+          <div className="form-text text-danger">
+            Debe seleccionar un proveedor para confirmar la compra.
+          </div>
+        )}
+      </div>
+
+      {/* BUSCADOR PRODUCTOS */}
+      <div className="mb-4">
+        <label className="form-label fw-bold">
+          Buscar Producto a Ingresar
+        </label>
         <input
           className="form-control form-control-lg"
-          placeholder="Escriba código o nombre..."
+          placeholder="Escriba código o nombre y presione Enter..."
           value={busqueda}
           onChange={(e) => setBusqueda(e.target.value)}
           onKeyDown={handleBuscarKeyDown}
         />
         <div className="form-text">
-          Escribí parte del nombre o el código y presioná Enter para agregar.
+          El producto se agrega automáticamente al carrito.
         </div>
       </div>
 
       <div className="row">
-        {/* TABLA CARRITO COMPRA */}
+        {/* TABLA DEL CARRITO DE COMPRA */}
         <div className="col-12 col-lg-8 mb-4">
-          <h2>Carrito de Compra</h2>
+          <h2>Items de la Compra</h2>
           <div className="table-responsive border rounded">
             <table className="table mb-0 align-middle">
               <thead>
@@ -347,7 +419,11 @@ export default function Compras() {
                           min="1"
                           value={item.cantidad}
                           onChange={(e) =>
-                            actualizarItem(item.id, "cantidad", e.target.value)
+                            actualizarItem(
+                              item.id,
+                              "cantidad",
+                              e.target.value
+                            )
                           }
                         />
                       </td>
@@ -484,10 +560,16 @@ export default function Compras() {
                   backgroundColor: "#4e7cf5",
                   borderColor: "#4e7cf5",
                 }}
-                disabled={loadingCompra || totalFinal <= 0}
+                disabled={
+                  loadingCompra ||
+                  totalFinal <= 0 ||
+                  !proveedorId
+                }
                 onClick={confirmarCompraHandler}
               >
-                {loadingCompra ? "Procesando..." : "Confirmar Compra"}
+                {loadingCompra
+                  ? "Procesando..."
+                  : "Confirmar Compra"}
               </button>
 
               {/* Cancelar (limpia carrito) */}
@@ -507,14 +589,21 @@ export default function Compras() {
                       Última compra: #{ultimaCompra.id} – Estado:{" "}
                       <strong>{ultimaCompra.estado}</strong>
                     </p>
+
+                    {ultimaCompra.proveedor_nombre && (
+                      <p className="mb-1">
+                        Proveedor:{" "}
+                        <strong>{ultimaCompra.proveedor_nombre}</strong>
+                      </p>
+                    )}
+
                     <p className="mb-3">
                       Total: $
-                      {Number(ultimaCompra.total || 0).toLocaleString(
-                        "es-AR",
-                        {
-                          minimumFractionDigits: 2,
-                        }
-                      )}
+                      {Number(
+                        ultimaCompra.total || 0
+                      ).toLocaleString("es-AR", {
+                        minimumFractionDigits: 2,
+                      })}
                     </p>
 
                     {ultimaCompra.estado === "confirmada" ||
@@ -524,17 +613,23 @@ export default function Compras() {
                         disabled={anulando}
                         onClick={anularUltimaCompra}
                       >
-                        {anulando ? "Anulando..." : "Anular Última Compra"}
+                        {anulando
+                          ? "Anulando..."
+                          : "Anular Última Compra"}
                       </button>
                     ) : (
-                      <button className="btn btn-secondary w-100" disabled>
+                      <button
+                        className="btn btn-secondary w-100"
+                        disabled
+                      >
                         Ya anulada
                       </button>
                     )}
                   </>
                 ) : (
                   <p className="text-muted mb-0">
-                    Todavía no hay compras confirmadas en esta sesión.
+                    Todavía no hay compras confirmadas en esta
+                    sesión.
                   </p>
                 )}
               </div>
