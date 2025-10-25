@@ -11,12 +11,10 @@ async function buscarProductoPorTerm(term, productosCache) {
   const t = term.trim().toLowerCase();
   if (!t) return null;
 
-  // 1) local
+  // 1) busco local
   const candidatosLocales = productosCache.filter((p) => {
     const nombreOk = p.nombre?.toLowerCase().includes(t);
-    const codigoOk = String(p.codigo || "")
-      .toLowerCase()
-      .includes(t);
+    const codigoOk = String(p.codigo || "").toLowerCase().includes(t);
     const barcodeOk = String(p.codigo_barras || p.barcode || "")
       .toLowerCase()
       .includes(t);
@@ -105,8 +103,7 @@ export default function Compras() {
 
   // ---------------- helpers carrito ----------------
   const agregarAlCarrito = (prod) => {
-    // en compras necesitamos costo_unitario editable.
-    // tomamos de prod.precio_costo || prod.costo || prod.precio_venta como fallback
+    // costo base editable
     const costoBase = Number(
       prod.precio_costo ?? prod.costo ?? prod.precio_venta ?? prod.precio ?? 0
     );
@@ -114,11 +111,11 @@ export default function Compras() {
     setCarrito((prev) => {
       const idx = prev.findIndex((r) => r.id === prod.id);
       if (idx !== -1) {
-        // si ya está, le sumo 1 a cantidad
         const updated = [...prev];
         const row = { ...updated[idx] };
         row.cantidad = row.cantidad + 1;
-        row.subtotal = row.cantidad * row.costo_unitario - row.bonif + row.impuestos;
+        row.subtotal =
+          row.cantidad * row.costo_unitario - row.bonif + row.impuestos;
         updated[idx] = row;
         return updated;
       }
@@ -161,10 +158,6 @@ export default function Compras() {
         if (item.id !== idProd) return item;
 
         let valNum;
-        if (field === "nombre") {
-          // no editamos nombre acá
-          return item;
-        }
 
         if (field === "cantidad") {
           valNum = Number(rawValue);
@@ -219,7 +212,6 @@ export default function Compras() {
   };
 
   // ---------------- flujo compra ----------------
-  // createPurchase -> confirmPurchase
   const confirmarCompraHandler = async () => {
     if (!carrito.length) {
       alert("Agregá productos antes de confirmar la compra.");
@@ -228,8 +220,6 @@ export default function Compras() {
 
     setLoadingCompra(true);
     try {
-      // Armamos payload como lo espera tu CompraWriteSerializer
-      // detalles: [{producto, cantidad, costo_unitario, bonif, impuestos, renglon}]
       const payload = {
         fecha: new Date().toISOString(),
         detalles: carrito.map((item, idx) => ({
@@ -242,23 +232,21 @@ export default function Compras() {
         })),
       };
 
-      // 1) crear en borrador
+      // 1) crear borrador
       const crearResp = await createPurchase(payload);
-      const compraCreada = crearResp.data; // {id, estado, total,...}
+      const compraCreada = crearResp.data;
       const compraId = compraCreada.id;
 
       // 2) confirmar
       const confirmarResp = await confirmPurchase(compraId);
       const compraConfirmada = confirmarResp.data;
 
-      // guardamos panel "ultimaCompra"
       setUltimaCompra({
         id: compraConfirmada.id,
         estado: compraConfirmada.estado,
         total: compraConfirmada.total,
       });
 
-      // limpiamos carrito
       setCarrito([]);
 
       alert("¡Compra confirmada con éxito!");
@@ -472,7 +460,10 @@ export default function Compras() {
               <hr />
 
               <div className="mb-4 d-flex justify-content-between align-items-start">
-                <div className="text-uppercase fw-semibold" style={{ fontSize: "1.1rem" }}>
+                <div
+                  className="text-uppercase fw-semibold"
+                  style={{ fontSize: "1.1rem" }}
+                >
                   TOTAL
                 </div>
                 <div
@@ -518,9 +509,12 @@ export default function Compras() {
                     </p>
                     <p className="mb-3">
                       Total: $
-                      {Number(ultimaCompra.total || 0).toLocaleString("es-AR", {
-                        minimumFractionDigits: 2,
-                      })}
+                      {Number(ultimaCompra.total || 0).toLocaleString(
+                        "es-AR",
+                        {
+                          minimumFractionDigits: 2,
+                        }
+                      )}
                     </p>
 
                     {ultimaCompra.estado === "confirmada" ||
