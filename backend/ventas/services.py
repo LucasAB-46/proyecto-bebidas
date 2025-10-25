@@ -1,58 +1,65 @@
-# ventas/services.py
-from decimal import Decimal
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
-from .models import Venta
+from .models import Venta, VentaDetalle
 from catalogo.models import Producto
 
+
 @transaction.atomic
-def confirmar_venta(venta_id: int, local_id: int) -> Venta:
-    venta = Venta.objects.select_for_update().get(id=venta_id, local_id=local_id)
-    if venta.estado != "BORRADOR":
+def confirmar_venta(venta_id: int, *, local_id: int):
+    venta = (
+        Venta.objects
+        .select_for_update()
+        .get(pk=venta_id, local_id=local_id)
+    )
+
+    if venta.estado.lower() != "borrador":
         raise ValidationError({"estado": "Sólo BORRADOR puede confirmarse"})
 
-    # Recalcular totales y descontar stock
-    subtotal = Decimal("0"); impuestos_total = Decimal("0"); bonif_total = Decimal("0")
-    for det in venta.detalles.select_related("producto").select_for_update():
-        prod: Producto = det.producto
+    # bajar stock
+    detalles = VentaDetalle.objects.filter(venta=venta).select_for_update()
+    for det in detalles:
+        prod = Producto.objects.select_for_update().get(pk=det.producto_id)
         if prod.local_id != local_id:
-            raise ValidationError({"producto": f"{prod.codigo} pertenece a otro Local"})
-        if det.cantidad <= 0:
-            raise ValidationError({"cantidad": "Debe ser > 0"})
+            raise ValidationError(
+                {"producto": f"El producto {prod.id} no pertenece al Local {local_id}."}
+            )
+
+        # stock disponible?
         if prod.stock_actual < det.cantidad:
-            raise ValidationError({"stock": f"Stock insuficiente para {prod.codigo}"})
+            raise ValidationError(
+                {"stock": f"Stock insuficiente para producto {prod.id} ({prod.nombre})."}
+            )
 
-        det.total_renglon = (det.cantidad * det.precio_unitario) - det.bonif + det.impuestos
-        det.save()
+        prod.stock_actual = prod.stock_actual - det.cantidad
+        prod.save(update_fields=["stock_actual"])
 
-        subtotal += (det.cantidad * det.precio_unitario)
-        impuestos_total += det.impuestos
-        bonif_total += det.bonif
-
-        prod.stock_actual = (prod.stock_actual or 0) - det.cantidad
-        prod.save()
-
-    venta.subtotal = subtotal
-    venta.impuestos = impuestos_total
-    venta.bonificaciones = bonif_total
-    venta.total = subtotal - bonif_total + impuestos_total
-    venta.estado = "CONFIRMADA"
-    venta.save()
+    venta.estado = "confirmada"
+    venta.save(update_fields=["estado"])
     return venta
 
+
 @transaction.atomic
-def anular_venta(venta_id: int, local_id: int) -> Venta:
-    venta = Venta.objects.select_for_update().get(id=venta_id, local_id=local_id)
-    if venta.estado != "CONFIRMADA":
+def anular_venta(venta_id: int, *, local_id: int):
+    venta = (
+        Venta.objects
+        .select_for_update()
+        .get(pk=venta_id, local_id=local_id)
+    )
+
+    if venta.estado.lower() != "confirmada":
         raise ValidationError({"estado": "Sólo CONFIRMADA puede anularse"})
 
-    for det in venta.detalles.select_related("producto").select_for_update():
-        prod = det.producto
+    # devolver stock
+    detalles = VentaDetalle.objects.filter(venta=venta).select_for_update()
+    for det in detalles:
+        prod = Producto.objects.select_for_update().get(pk=det.producto_id)
         if prod.local_id != local_id:
-            raise ValidationError({"producto": f"{prod.codigo} pertenece a otro Local"})
-        prod.stock_actual = (prod.stock_actual or 0) + det.cantidad
-        prod.save()
+            raise ValidationError(
+                {"producto": f"El producto {prod.id} no pertenece al Local {local_id}."}
+            )
+        prod.stock_actual = prod.stock_actual + det.cantidad
+        prod.save(update_fields=["stock_actual"])
 
-    venta.estado = "ANULADA"
-    venta.save()
+    venta.estado = "anulada"
+    venta.save(update_fields=["estado"])
     return venta

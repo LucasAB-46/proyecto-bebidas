@@ -1,4 +1,3 @@
-# ventas/serializers.py
 from decimal import Decimal
 from typing import List
 
@@ -10,7 +9,7 @@ from .models import Venta, VentaDetalle
 from catalogo.models import Producto
 
 
-# ----------------------- READ SERIALIZERS -----------------------
+# -------- READ --------
 class VentaDetalleReadSerializer(serializers.ModelSerializer):
     producto = serializers.PrimaryKeyRelatedField(read_only=True)
 
@@ -28,8 +27,7 @@ class VentaDetalleReadSerializer(serializers.ModelSerializer):
 
 
 class VentaReadSerializer(serializers.ModelSerializer):
-    # related_name esperado: "detalles" (según services)
-    detalles = VentaDetalleReadSerializer(many=True, read_only=True)
+    detalles = VentaDetalleReadSerializer(many=True, read_only=True, source="ventadetalle_set")
 
     class Meta:
         model = Venta
@@ -37,7 +35,6 @@ class VentaReadSerializer(serializers.ModelSerializer):
             "id",
             "local_id",
             "fecha",
-            "cliente",
             "estado",
             "subtotal",
             "impuestos",
@@ -47,7 +44,7 @@ class VentaReadSerializer(serializers.ModelSerializer):
         )
 
 
-# ----------------------- WRITE SERIALIZERS -----------------------
+# -------- WRITE --------
 class VentaDetalleWriteSerializer(serializers.Serializer):
     producto = serializers.IntegerField()
     cantidad = serializers.DecimalField(max_digits=14, decimal_places=4)
@@ -76,7 +73,6 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         model = Venta
         fields = (
             "id",
-            "cliente",
             "fecha",
             "detalles",
             "subtotal",
@@ -94,15 +90,20 @@ class VentaWriteSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         """
-        Crea la venta en 'BORRADOR' con renglones y totales calculados.
-        La view debe llamar a serializer.save(local_id=...).
-        El descuento de stock ocurre en services.confirmar_venta().
+        Crea la venta en 'borrador' con sus renglones y totales.
+        La view debe llamar serializer.save(local_id=..., usuario=...)
         """
         local_id = validated_data.pop("local_id")
+        usuario = validated_data.pop("usuario", None)
         detalles = validated_data.pop("detalles", [])
         validated_data.setdefault("fecha", timezone.now())
 
-        venta = Venta.objects.create(local_id=local_id, estado="BORRADOR", **validated_data)
+        venta = Venta.objects.create(
+            local_id=local_id,
+            estado="borrador",
+            usuario=usuario,
+            **validated_data,
+        )
 
         subtotal = Decimal("0")
         imp_total = Decimal("0")
@@ -111,33 +112,34 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         for idx, d in enumerate(detalles, start=1):
             prod = (
                 Producto.objects.select_for_update()
-                .only("id", "local_id")
+                .only("id", "local_id", "stock_actual")
                 .get(pk=d["producto"])
             )
+
             if prod.local_id != local_id:
                 raise serializers.ValidationError(
                     {"producto": f"El producto {d['producto']} no pertenece al Local {local_id}."}
                 )
 
             cant = d["cantidad"]
-            precio = d["precio_unitario"]
+            precio_u = d["precio_unitario"]
             bonif = d.get("bonif") or Decimal("0")
             imp = d.get("impuestos") or Decimal("0")
 
-            total_r = (cant * precio) - bonif + imp
+            total_r = (cant * precio_u) - bonif + imp
 
             VentaDetalle.objects.create(
                 venta=venta,
                 renglon=d.get("renglon") or idx,
                 producto_id=d["producto"],
                 cantidad=cant,
-                precio_unitario=precio,
+                precio_unitario=precio_u,
                 bonif=bonif,
                 impuestos=imp,
                 total_renglon=total_r,
             )
 
-            subtotal += cant * precio
+            subtotal += cant * precio_u
             imp_total += imp
             bonif_total += bonif
 
@@ -148,60 +150,3 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         venta.save(update_fields=["subtotal", "impuestos", "bonificaciones", "total"])
 
         return venta
-
-    @transaction.atomic
-    def update(self, instance: Venta, validated_data):
-        local_id = validated_data.pop("local_id")
-        detalles = validated_data.pop("detalles", None)
-
-        for attr, val in validated_data.items():
-            setattr(instance, attr, val)
-
-        if detalles is not None:
-            # Borramos y re-creamos renglones (simple y efectivo para ahora)
-            instance.detalles.all().delete()
-
-            subtotal = Decimal("0")
-            imp_total = Decimal("0")
-            bonif_total = Decimal("0")
-
-            for idx, d in enumerate(detalles, start=1):
-                prod = (
-                    Producto.objects.select_for_update()
-                    .only("id", "local_id")
-                    .get(pk=d["producto"])
-                )
-                if prod.local_id != local_id:
-                    raise serializers.ValidationError(
-                        {"producto": f"El producto {d['producto']} no pertenece al Local {local_id}."}
-                    )
-
-                cant = d["cantidad"]
-                precio = d["precio_unitario"]
-                bonif = d.get("bonif") or Decimal("0")
-                imp = d.get("impuestos") or Decimal("0")
-
-                total_r = (cant * precio) - bonif + imp
-
-                VentaDetalle.objects.create(
-                    venta=instance,
-                    renglon=d.get("renglon") or idx,
-                    producto_id=d["producto"],
-                    cantidad=cant,
-                    precio_unitario=precio,
-                    bonif=bonif,
-                    impuestos=imp,
-                    total_renglon=total_r,
-                )
-
-                subtotal += cant * precio
-                imp_total += imp
-                bonif_total += bonif
-
-            instance.subtotal = subtotal
-            instance.impuestos = imp_total
-            instance.bonificaciones = bonif_total
-            instance.total = subtotal - bonif_total + imp_total
-
-        instance.save()
-        return instance
