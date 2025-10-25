@@ -1,192 +1,191 @@
 // src/pages/Productos.jsx
 
-import { useEffect, useMemo, useState } from "react";
-// --- ¡IMPORTACIÓN CORREGIDA Y VERIFICADA! ---
-import { Link, useSearchParams, useLocation } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { listProducts, deleteProduct } from "../services/products";
-import { useAuth } from "../context/AuthContext";
-
-const headers = [
-  { key: "codigo",       label: "Código" },
-  { key: "nombre",       label: "Nombre" },
-  { key: "categoria_nombre", label: "Categoría" },
-  { key: "marca",        label: "Marca" },
-  { key: "precio_venta", label: "Precio" },
-  { key: "stock_actual", label: "Stock" },
-  { key: "acciones",     label: "Acciones", sortable: false },
-];
 
 export default function Productos() {
-  const { isAdmin } = useAuth();
-  const [sp, setSp] = useSearchParams();
   const location = useLocation();
-  const [data, setData] = useState({ results: [], count: 0, next: null, previous: null });
-  const [loading, setLoading] = useState(true);
-  const [msg, setMsg] = useState(null);
+  const successMsg = location.state?.success;
 
-  const search    = sp.get("search")   ?? "";
-  const page      = parseInt(sp.get("page") ?? "1", 10);
-  const ordering  = sp.get("ordering") ?? "nombre";
+  const [productos, setProductos] = useState([]);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [page, setPage] = useState(1);
+  const [count, setCount] = useState(0);
+
+  // cargar productos
+  const fetchProductos = async (opts = {}) => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const params = {
+        search: opts.search ?? search,
+        page: opts.page ?? page,
+        ordering: "nombre",
+        page_size: 25,
+      };
+
+      const resp = await listProducts(params);
+
+      // DRF paginado: results y count
+      setProductos(resp.data.results || []);
+      setCount(resp.data.count || 0);
+    } catch (err) {
+      console.error("Error al cargar productos:", err);
+      setError("No se pudieron cargar los productos.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (location.state?.success && !msg) {
-      setMsg({ type: "success", text: location.state.success });
-      window.history.replaceState({}, document.title);
-    }
+    fetchProductos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
-    let alive = true;
-    const fetchData = async () => {
-      setLoading(true);
-      try {
-        const res = await listProducts({ search, page, ordering });
-        if (alive) {
-          setData(res.data);
-          if (msg?.type === 'danger') setMsg(null);
-        }
-      } catch (e) {
-        console.error("Error cargando productos:", e);
-        const detail = e?.response?.data?.detail || e?.message || "Error cargando productos";
-        if (alive) setMsg({ type: "danger", text: String(detail) });
-      } finally {
-        if (alive) setLoading(false);
-      }
-    };
-
-    fetchData();
-    return () => { alive = false; };
-  }, [search, page, ordering, location.state]); // Añadido location.state para refrescar en navegación
-
-  const handleDelete = async (productId) => {
-    if (window.confirm("¿Estás seguro de que quieres eliminar este producto?")) {
-      try {
-        await deleteProduct(productId);
-        // Refrescamos la data para asegurar consistencia
-        const res = await listProducts({ search, page, ordering });
-        setData(res.data);
-        setMsg({ type: "success", text: "Producto eliminado con éxito." });
-      } catch (e) {
-        console.error("Error eliminando producto:", e);
-        setMsg({ type: "danger", text: "Error al eliminar el producto." });
-      }
-    }
-  };
-
-  const pageSize   = 25;
-  const totalPages = useMemo(
-    () => (data ? Math.max(1, Math.ceil(data.count / pageSize)) : 1),
-    [data]
-  );
-
-  const onSubmit = (e) => {
+  const handleBuscar = (e) => {
     e.preventDefault();
-    const q = new FormData(e.currentTarget).get("q") || "";
-    setSp({ search: q, page: "1", ordering });
+    setPage(1);
+    fetchProductos({ page: 1, search });
   };
 
-  const toggleOrdering = (key, sortable = true) => {
-    if (!sortable) return;
-    const next = ordering === `-${key}` ? key : `-${key}`;
-    setSp({ search, page: "1", ordering: next });
+  const handleEliminar = async (id) => {
+    if (!window.confirm("¿Seguro que desea eliminar este producto?")) return;
+    try {
+      await deleteProduct(id);
+      fetchProductos();
+    } catch (err) {
+      console.error("Error al eliminar:", err);
+      alert("No se pudo eliminar el producto.");
+    }
   };
 
-  if (loading) {
-    return (
-      <div className="container py-3">
-        <div className="spinner-border" role="status">
-          <span className="visually-hidden">Loading...</span>
-        </div>
-      </div>
-    );
-  }
+  const totalPaginas = Math.max(1, Math.ceil(count / 25));
 
   return (
-    <div className="container py-3">
+    <div className="container py-4">
       <div className="d-flex justify-content-between align-items-center mb-3">
-        <h1 className="h4 mb-0">Productos</h1>
-        {isAdmin && (
-          <Link to="/productos/nuevo" className="btn btn-primary">
-            Crear Producto
-          </Link>
-        )}
+        <h1 className="h4 m-0">Productos</h1>
+        <Link to="/productos/nuevo" className="btn btn-primary">
+          Crear Producto
+        </Link>
       </div>
 
-      {msg && <div className={`alert alert-${msg.type}`}>{msg.text}</div>}
+      {/* Mensaje de éxito después de venta o compra */}
+      {successMsg && (
+        <div className="alert alert-success">{successMsg}</div>
+      )}
 
-      <form className="input-group mb-3" onSubmit={onSubmit}>
-        <input
-          name="q"
-          className="form-control"
-          placeholder="Buscar (código, nombre, marca, categoría)…"
-          defaultValue={search}
-        />
-        <button className="btn btn-outline-secondary">Buscar</button>
+      {error && (
+        <div className="alert alert-danger">{error}</div>
+      )}
+
+      <form className="row g-2 align-items-center mb-3" onSubmit={handleBuscar}>
+        <div className="col-sm-10">
+          <input
+            className="form-control"
+            placeholder="Buscar (código, nombre, marca, categoría)..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="col-sm-2 d-grid">
+          <button className="btn btn-outline-secondary" type="submit">
+            Buscar
+          </button>
+        </div>
       </form>
 
       <div className="table-responsive">
-        <table className="table table-sm align-middle">
+        <table className="table align-middle">
           <thead>
             <tr>
-              {headers.map(h => (
-                <th key={h.key} role="button" onClick={() => toggleOrdering(h.key, h.sortable !== false)}>
-                  {h.label}{" "}
-                  {ordering.replace("-", "") === h.key ? (ordering.startsWith("-") ? "↓" : "↑") : ""}
-                </th>
-              ))}
+              <th>Código</th>
+              <th>Nombre ↑</th>
+              <th>Categoría</th>
+              <th>Marca</th>
+              <th>Precio</th>
+              <th>Stock</th>
+              <th>Acciones</th>
             </tr>
           </thead>
+
           <tbody>
-            {data.results?.length === 0 && (
-              <tr><td colSpan={headers.length} className="text-muted">Sin productos</td></tr>
-            )}
-            {data.results?.map(p => (
-              <tr key={p.id}>
-                <td>{p.codigo}</td>
-                <td>{p.nombre}</td>
-                <td>{p.categoria_nombre || "-"}</td>
-                <td>{p.marca || "-"}</td>
-                <td>${parseFloat(p.precio_venta).toFixed(2)}</td>
-                <td>{parseInt(p.stock_actual)}</td>
-                <td>
-                  <div className="btn-group">
-                    {isAdmin && (
-                      <>
-                        <Link to={`/productos/${p.id}/editar`} className="btn btn-outline-secondary btn-sm">
-                          Editar
-                        </Link>
-                        <button onClick={() => handleDelete(p.id)} className="btn btn-outline-danger btn-sm">
-                          Eliminar
-                        </button>
-                      </>
-                    )}
-                  </div>
+            {loading && (
+              <tr>
+                <td colSpan="7" className="text-center text-muted">
+                  Cargando...
                 </td>
               </tr>
-            ))}
+            )}
+
+            {!loading && productos.length === 0 && (
+              <tr>
+                <td colSpan="7" className="text-center text-muted">
+                  Sin productos
+                </td>
+              </tr>
+            )}
+
+            {!loading &&
+              productos.map((p) => (
+                <tr key={p.id}>
+                  <td>{p.codigo}</td>
+                  <td>{p.nombre}</td>
+                  <td>{p.categoria_nombre || p.categoria}</td>
+                  <td>{p.marca}</td>
+                  <td>${parseFloat(p.precio_venta).toFixed(2)}</td>
+                  <td>{p.stock_actual}</td>
+                  <td className="d-flex flex-wrap gap-2">
+                    <Link
+                      to={`/productos/${p.id}/editar`}
+                      className="btn btn-sm btn-outline-secondary"
+                    >
+                      Editar
+                    </Link>
+                    <button
+                      className="btn btn-sm btn-outline-danger"
+                      onClick={() => handleEliminar(p.id)}
+                    >
+                      Eliminar
+                    </button>
+                  </td>
+                </tr>
+              ))}
           </tbody>
         </table>
       </div>
 
-      <div className="d-flex justify-content-between align-items-center">
-        <small className="text-muted">Total: {data.count}</small>
-        <div className="btn-group">
-          <button
-            className="btn btn-outline-secondary btn-sm"
-            disabled={!data.previous || page <= 1}
-            onClick={() => setSp({ search, ordering, page: String(page - 1) })}
-          >
-            ← Anterior
-          </button>
-          <span className="btn btn-outline-secondary btn-sm disabled">
-            Página {page} / {totalPages}
-          </span>
-          <button
-            className="btn btn-outline-secondary btn-sm"
-            disabled={!data.next || page >= totalPages}
-            onClick={() => setSp({ search, ordering, page: String(page + 1) })}
-          >
-            Siguiente →
-          </button>
-        </div>
+      {/* Paginación simple */}
+      <div className="d-flex justify-content-end align-items-center gap-2">
+        <button
+          className="btn btn-outline-secondary btn-sm"
+          disabled={page <= 1}
+          onClick={() => setPage((prev) => Math.max(prev - 1, 1))}
+        >
+          ← Anterior
+        </button>
+
+        <span className="text-muted">
+          Página {page} / {totalPaginas}
+        </span>
+
+        <button
+          className="btn btn-outline-secondary btn-sm"
+          disabled={page >= totalPaginas}
+          onClick={() =>
+            setPage((prev) => Math.min(prev + 1, totalPaginas))
+          }
+        >
+          Siguiente →
+        </button>
+      </div>
+
+      <div className="mt-3 text-muted small">
+        Total: {count}
       </div>
     </div>
   );
