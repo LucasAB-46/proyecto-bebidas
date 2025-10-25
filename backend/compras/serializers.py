@@ -1,4 +1,3 @@
-# compras/serializers.py
 from decimal import Decimal
 from typing import List
 
@@ -8,14 +7,15 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import Compra, CompraDetalle
-from catalogo.models import Producto  # ← este sí está en 'catalogo' según tu traza
+from catalogo.models import Producto  # Producto vive en 'catalogo'
 
 
 # ----------------------- util: resolver Proveedor -----------------------
 def _get_proveedor_model():
     """
     Resuelve el modelo Proveedor dinámicamente.
-    Busca en app 'catalogo' y luego en 'core_app'. Agrega aquí otras apps si corresponde.
+    Busca primero en app 'catalogo' y luego en 'core_app'.
+    Si en tu proyecto Proveedor está en otro lado, agregalo acá.
     """
     candidates = [
         ("catalogo", "Proveedor"),
@@ -27,16 +27,18 @@ def _get_proveedor_model():
             return model
     raise ImportError(
         "No se encontró el modelo 'Proveedor'. "
-        "Asegúrate de que exista y, si está en otra app, agrega su (app_label, 'Proveedor') "
-        "a la lista 'candidates' en _get_proveedor_model()."
+        "Si está en otra app, agregalo a la lista 'candidates' en _get_proveedor_model()."
     )
 
 
 ProveedorModel = _get_proveedor_model()
 
 
-# ----------------------- READ SERIALIZERS -----------------------
+# ------------------------------------------------------------------------
+# READ SERIALIZERS (lo que respondemos al frontend)
+# ------------------------------------------------------------------------
 class CompraDetalleReadSerializer(serializers.ModelSerializer):
+    # mostramos sólo la PK del producto; se puede hacer más rico si querés
     producto = serializers.PrimaryKeyRelatedField(read_only=True)
 
     class Meta:
@@ -54,7 +56,11 @@ class CompraDetalleReadSerializer(serializers.ModelSerializer):
 
 class CompraReadSerializer(serializers.ModelSerializer):
     proveedor = serializers.PrimaryKeyRelatedField(read_only=True)
-    detalles = CompraDetalleReadSerializer(many=True, read_only=True, source="compradetalle_set")
+
+    # IMPORTANTÍSIMO: en tu modelo CompraDetalle pusiste
+    # compra = models.ForeignKey(Compra, related_name="detalles", ...)
+    # así que el reverse name es "detalles".
+    detalles = CompraDetalleReadSerializer(many=True, read_only=True)
 
     class Meta:
         model = Compra
@@ -72,7 +78,9 @@ class CompraReadSerializer(serializers.ModelSerializer):
         )
 
 
-# ----------------------- WRITE SERIALIZERS -----------------------
+# ------------------------------------------------------------------------
+# WRITE SERIALIZERS (lo que el frontend manda para crear/editar)
+# ------------------------------------------------------------------------
 class CompraDetalleWriteSerializer(serializers.Serializer):
     producto = serializers.IntegerField()
     cantidad = serializers.DecimalField(max_digits=14, decimal_places=4)
@@ -94,9 +102,11 @@ class CompraDetalleWriteSerializer(serializers.Serializer):
 
 
 class CompraWriteSerializer(serializers.ModelSerializer):
-    # queryset se setea dinámicamente abajo; definimos el campo acá
+    # proveedor: PK del proveedor
     proveedor = serializers.PrimaryKeyRelatedField(queryset=ProveedorModel.objects.all())
+    # fecha: opcional, si no viene usamos timezone.now()
     fecha = serializers.DateTimeField(required=False)
+    # detalles: viene del frontend como array de renglones
     detalles = CompraDetalleWriteSerializer(many=True, write_only=True)
 
     class Meta:
@@ -111,6 +121,7 @@ class CompraWriteSerializer(serializers.ModelSerializer):
             "bonificaciones",
             "total",
         )
+        # estos campos los calculamos nosotros, no los debe mandar el frontend
         read_only_fields = ("subtotal", "impuestos", "bonificaciones", "total")
 
     def validate_detalles(self, value: List[dict]):
@@ -118,30 +129,42 @@ class CompraWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Debe informar al menos un renglón.")
         return value
 
-    # ----------------------- create/update transaccional -----------------------
+    # --------------------------------------------------------------------
+    # create / update corren en transacción
+    # OJO: la view TIENE que llamar serializer.save(local_id=EL_LOCAL)
+    # --------------------------------------------------------------------
     @transaction.atomic
     def create(self, validated_data):
         """
-        Crea la compra en 'borrador' con renglones y totales.
-        Requiere que la ViewSet llame a serializer.save(local_id=...).
+        Crea la compra en estado 'borrador' con sus renglones.
+        Espera que venga local_id desde serializer.save(local_id=...).
+        Recalcula totales.
         """
         local_id = validated_data.pop("local_id")
         detalles = validated_data.pop("detalles", [])
         validated_data.setdefault("fecha", timezone.now())
 
-        compra = Compra.objects.create(local_id=local_id, estado="borrador", **validated_data)
+        # Creamos cabecera de compra
+        compra = Compra.objects.create(
+            local_id=local_id,
+            estado="borrador",
+            **validated_data,
+        )
 
         subtotal = Decimal("0")
         imp_total = Decimal("0")
         bonif_total = Decimal("0")
 
+        # Creamos cada detalle
         for idx, d in enumerate(detalles, start=1):
-            # bloqueo y existencia del producto
+            # bloquemos y validemos que el producto existe y pertenece al local
             prod = (
-                Producto.objects.select_for_update()
+                Producto.objects
+                .select_for_update()
                 .only("id", "local_id")
                 .get(pk=d["producto"])
             )
+
             if prod.local_id != local_id:
                 raise serializers.ValidationError(
                     {"producto": f"El producto {d['producto']} no pertenece al Local {local_id}."}
@@ -169,6 +192,7 @@ class CompraWriteSerializer(serializers.ModelSerializer):
             imp_total += imp
             bonif_total += bonif
 
+        # calculamos y guardamos los totales en la cabecera
         compra.subtotal = subtotal
         compra.impuestos = imp_total
         compra.bonificaciones = bonif_total
@@ -179,14 +203,22 @@ class CompraWriteSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def update(self, instance: Compra, validated_data):
+        """
+        Edita una compra (sólo mientras sigue siendo 'borrador' normalmente).
+        Reemplaza todos los detalles si se mandan nuevos.
+        Recalcula totales.
+        Espera local_id desde serializer.save(local_id=...).
+        """
         local_id = validated_data.pop("local_id")
         detalles = validated_data.pop("detalles", None)
 
+        # Actualizamos campos simples en cabecera (proveedor, fecha, etc.)
         for attr, val in validated_data.items():
             setattr(instance, attr, val)
 
         if detalles is not None:
-            instance.compradetalle_set.all().delete()
+            # pisamos TODOS los renglones
+            instance.detalles.all().delete()
 
             subtotal = Decimal("0")
             imp_total = Decimal("0")
@@ -194,10 +226,12 @@ class CompraWriteSerializer(serializers.ModelSerializer):
 
             for idx, d in enumerate(detalles, start=1):
                 prod = (
-                    Producto.objects.select_for_update()
+                    Producto.objects
+                    .select_for_update()
                     .only("id", "local_id")
                     .get(pk=d["producto"])
                 )
+
                 if prod.local_id != local_id:
                     raise serializers.ValidationError(
                         {"producto": f"El producto {d['producto']} no pertenece al Local {local_id}."}

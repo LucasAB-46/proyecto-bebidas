@@ -1,6 +1,4 @@
-# compras/views.py
-
-from rest_framework import viewsets, permissions, status
+from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
@@ -10,39 +8,49 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from .models import Compra
 from .serializers import CompraReadSerializer, CompraWriteSerializer
 from .services import confirmar_compra, anular_compra
-# --- 1. IMPORTAMOS EL NUEVO PERMISO ---
-from core_app.permissions import IsAdminUser
+# si tenés permisos custom reales, usalos; mientras tanto dejamos IsAuthenticated
+from rest_framework.permissions import IsAuthenticated
 
-# Este Mixin no necesita cambios
+
 class LocalScopedMixin:
+    """
+    Mixin para:
+    - leer el header X-Local-ID
+    - filtrar queryset por ese local
+    """
     local_header = "X-Local-ID"
 
-    def _local_id(self):
-        h = self.request.headers.get(self.local_header)
-        if not h:
+    def _local_id(self) -> int:
+        raw = self.request.headers.get(self.local_header)
+        if not raw:
             raise ValidationError({self.local_header: "Header requerido"})
         try:
-            return int(h)
+            return int(raw)
         except ValueError:
             raise ValidationError({self.local_header: "Debe ser entero"})
 
     def get_queryset(self):
-        # Asumimos que el modelo Compra tiene un campo 'local_id'
-        return Compra.objects.filter(local_id=self._local_id()).order_by("-id")
+        return (
+            Compra.objects
+            .filter(local_id=self._local_id())
+            .order_by("-id")
+        )
+
 
 class CompraViewSet(LocalScopedMixin, viewsets.ModelViewSet):
-    # --- 2. APLICAMOS PERMISO ---
-    # Solo los usuarios del grupo 'Admin' pueden acceder a las compras.
-    permission_classes = [IsAdminUser]
-    
+    permission_classes = [IsAuthenticated]
+
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ["id", "proveedor__nombre", "estado"]
     ordering_fields = ["id", "fecha", "total"]
 
     def get_serializer_class(self):
-        return CompraWriteSerializer if self.action in ("create","update","partial_update") else CompraReadSerializer
+        if self.action in ("create", "update", "partial_update"):
+            return CompraWriteSerializer
+        return CompraReadSerializer
 
     def perform_create(self, serializer):
+        # Le pasamos el local_id que el serializer espera
         serializer.save(local_id=self._local_id())
 
     def perform_update(self, serializer):
