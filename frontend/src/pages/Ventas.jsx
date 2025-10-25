@@ -1,335 +1,353 @@
-// src/pages/Ventas.jsx
-import React, { useState, useMemo, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { listProducts } from '../services/products.js';
-import { createSale, confirmSale, annulSale } from '../services/sales.js';
+import { useEffect, useState } from "react";
+import api from "../api/client.jsx";
+import ResumenDeVenta from "../components/ResumenDeVenta.jsx";
+
+// Util: formatear $ con separador miles
+function fmtMoney(n) {
+  return `$${Number(n || 0).toLocaleString("es-AR")}`;
+}
 
 export default function Ventas() {
-  const nav = useNavigate();
+  // --------------------------
+  // Estados principales
+  // --------------------------
+  const [busqueda, setBusqueda] = useState("");
+  const [sugeridos, setSugeridos] = useState([]); // resultados live de búsqueda producto
+  const [carrito, setCarrito] = useState([]); // [{id, nombre, precio_venta, cantidad}]
+  const [ultimaVenta, setUltimaVenta] = useState(null); // {id, estado, total}
+  const [flashOk, setFlashOk] = useState(null); // {numero, total} para banner verde
+  const [cargandoConfirmar, setCargandoConfirmar] = useState(false);
 
-  // carrito y búsqueda
-  const [cart, setCart] = useState([]);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
-  const [loadingSearch, setLoadingSearch] = useState(false);
+  // --------------------------
+  // Derivados
+  // --------------------------
+  const totalVenta = carrito.reduce(
+    (acc, item) => acc + item.precio_venta * item.cantidad,
+    0
+  );
 
-  // estado de venta/errores
-  const [processingSale, setProcessingSale] = useState(false);
-  const [saleError, setSaleError] = useState(null);
-
-  // última venta confirmada (para poder anular rápido)
-  const [lastSale, setLastSale] = useState(null);
-
-  // buscar productos (debounce 300ms)
+  // --------------------------
+  // Efecto para auto-ocultar el banner verde
+  // --------------------------
   useEffect(() => {
-    if (searchTerm.length < 3) {
-      setSearchResults([]);
+    if (!flashOk) return;
+    const t = setTimeout(() => setFlashOk(null), 4000);
+    return () => clearTimeout(t);
+  }, [flashOk]);
+
+  // --------------------------
+  // Buscar productos al tipear
+  // --------------------------
+  useEffect(() => {
+    if (!busqueda || busqueda.trim().length < 1) {
+      setSugeridos([]);
       return;
     }
 
-    const t = setTimeout(async () => {
-      setLoadingSearch(true);
+    const ctrl = new AbortController();
+    async function run() {
       try {
-        const resp = await listProducts({ search: searchTerm, page_size: 5 });
-        setSearchResults(resp.data.results || []);
-      } catch (err) {
-        console.error("Error al buscar productos:", err);
-      } finally {
-        setLoadingSearch(false);
-      }
-    }, 300);
-
-    return () => clearTimeout(t);
-  }, [searchTerm]);
-
-  // helpers carrito
-  const addToCart = (product) => {
-    setCart(prev => {
-      const found = prev.find(i => i.id === product.id);
-      if (found) {
-        return prev.map(i =>
-          i.id === product.id ? { ...i, cantidad: i.cantidad + 1 } : i
+        const resp = await api.get(
+          `/catalogo/productos/?search=${encodeURIComponent(
+            busqueda
+          )}&page_size=5`,
+          { signal: ctrl.signal }
         );
+        // el backend devuelve un paginado tipo {results:[...]}
+        const lista = resp.data.results || resp.data || [];
+        setSugeridos(lista);
+      } catch (err) {
+        console.error("Error buscando productos", err);
       }
-      return [...prev, { ...product, cantidad: 1 }];
-    });
-    setSearchTerm('');
-    setSearchResults([]);
-  };
+    }
+    run();
 
-  const updateQuantity = (id, nuevaCantidad) => {
-    setCart(prev => {
-      if (nuevaCantidad <= 0) {
-        return prev.filter(i => i.id !== id);
-      }
-      return prev.map(i =>
-        i.id === id ? { ...i, cantidad: nuevaCantidad } : i
+    return () => ctrl.abort();
+  }, [busqueda]);
+
+  // --------------------------
+  // Agregar producto al carrito
+  // --------------------------
+  function agregarAlCarrito(prod) {
+    // prod viene del backend. asumimos:
+    // prod.id, prod.nombre, prod.precio_venta (o como se llame tu campo de venta)
+    // ⚠ si tu campo no es "precio_venta", cambialo acá y en el render del carrito
+    const existente = carrito.find((i) => i.id === prod.id);
+    if (existente) {
+      setCarrito((prev) =>
+        prev.map((i) =>
+          i.id === prod.id
+            ? { ...i, cantidad: i.cantidad + 1 }
+            : i
+        )
       );
-    });
-  };
+    } else {
+      setCarrito((prev) => [
+        ...prev,
+        {
+          id: prod.id,
+          nombre: prod.nombre,
+          precio_venta: Number(prod.precio_venta ?? prod.precio ?? 0), // <-- ajustar si tu campo es distinto
+          cantidad: 1,
+        },
+      ]);
+    }
+    setBusqueda("");
+    setSugeridos([]);
+  }
 
-  // total calculado
-  const totalVenta = useMemo(() => {
-    return cart.reduce((total, item) => {
-      const unit = parseFloat(item.precio_venta || 0);
-      return total + unit * item.cantidad;
-    }, 0);
-  }, [cart]);
+  // --------------------------
+  // Cambiar cantidad en carrito
+  // --------------------------
+  function cambiarCantidad(idProd, nuevaCant) {
+    if (!nuevaCant || nuevaCant <= 0) return;
+    setCarrito((prev) =>
+      prev.map((i) =>
+        i.id === idProd
+          ? { ...i, cantidad: nuevaCant }
+          : i
+      )
+    );
+  }
 
-  // confirmar venta
-  const handleConfirmSale = async () => {
-    setProcessingSale(true);
-    setSaleError(null);
+  // --------------------------
+  // Eliminar item del carrito
+  // --------------------------
+  function quitarDelCarrito(idProd) {
+    setCarrito((prev) => prev.filter((i) => i.id !== idProd));
+  }
 
+  // --------------------------
+  // Cancelar venta (vacía carrito COMPLETO)
+  // --------------------------
+  function handleCancelarVenta() {
+    setCarrito([]);
+  }
+
+  // --------------------------
+  // Confirmar venta:
+  //  1. crea venta borrador
+  //  2. confirma en backend
+  //  3. limpia carrito
+  //  4. guarda ultimaVenta
+  //  5. arma flashOk
+  // --------------------------
+  async function handleConfirmarVenta() {
+    if (carrito.length === 0) return;
+
+    setCargandoConfirmar(true);
     try {
-      // armo los renglones para el backend
-      const detalles = cart.map(item => ({
+      // armamos payload según lo que espera tu backend en /ventas/
+      // usamos campos:
+      //   producto -> id del producto
+      //   cantidad
+      //   precio_unitario -> precio_venta
+      const detallesPayload = carrito.map((item, idx) => ({
+        renglon: idx + 1,
         producto: item.id,
         cantidad: item.cantidad,
         precio_unitario: item.precio_venta,
       }));
 
-      // 1) crear venta en borrador
-      const created = await createSale({ detalles });
-      const saleId = created.data.id;
+      // Paso 1: crear venta en borrador
+      const crearResp = await api.post("/ventas/", {
+        detalles: detallesPayload,
+      });
+      const ventaCreada = crearResp.data; // {id, total, ...}
 
-      // 2) confirmar
-      const confirmed = await confirmSale(saleId);
+      // Paso 2: confirmar
+      const confirmarResp = await api.post(
+        `/ventas/${ventaCreada.id}/confirmar/`
+      );
+      const ventaConfirmada = confirmarResp.data; // {id, estado:'CONFIRMADA', total,...}
 
-      alert("¡Venta confirmada con éxito!");
+      // Paso 3: limpiar carrito
+      setCarrito([]);
 
-      // guardo esa venta como "última"
-      setLastSale({
-        id: confirmed.data.id,
-        estado: confirmed.data.estado,
-        total: confirmed.data.total,
+      // Paso 4: guardar ultimaVenta
+      setUltimaVenta({
+        id: ventaConfirmada.id,
+        estado: ventaConfirmada.estado,
+        total: ventaConfirmada.total,
       });
 
-      // limpio carrito
-      setCart([]);
-
+      // Paso 5: banner verde
+      setFlashOk({
+        numero: ventaConfirmada.id,
+        total: ventaConfirmada.total,
+      });
     } catch (err) {
-      console.error("Error al confirmar la venta:", err);
-      const msg =
-        err.response?.data?.detail ||
-        err.response?.data?.estado ||
-        "Ocurrió un error al procesar la venta.";
-      setSaleError(msg);
+      console.error("Error al confirmar venta", err);
+      // Podés meter un alert si querés feedback inmediato
+      // alert("Ocurrió un error al confirmar la venta");
     } finally {
-      setProcessingSale(false);
+      setCargandoConfirmar(false);
     }
-  };
+  }
 
-  // anular última venta
-  const handleAnnulLastSale = async () => {
-    if (!lastSale || !lastSale.id) {
-      alert("No hay venta reciente para anular.");
-      return;
-    }
-
-    const ok = window.confirm(
-      `¿Seguro que querés ANULAR la venta #${lastSale.id} por $${lastSale.total}?`
-    );
-    if (!ok) return;
-
+  // --------------------------
+  // Anular última venta
+  // --------------------------
+  async function handleAnularUltimaVenta(idVenta) {
+    if (!idVenta) return;
     try {
-      setProcessingSale(true);
-      setSaleError(null);
+      const resp = await api.post(`/ventas/${idVenta}/anular/`);
+      const ventaAnulada = resp.data; // {id, estado: 'ANULADA', total,...}
 
-      const annulResp = await annulSale(lastSale.id);
-
-      alert(`Venta #${lastSale.id} anulada.`);
-
-      // actualizo estado a ANULADA
-      setLastSale(prev => ({
-        ...prev,
-        estado: annulResp.data.estado,
-      }));
+      setUltimaVenta({
+        id: ventaAnulada.id,
+        estado: ventaAnulada.estado,
+        total: ventaAnulada.total,
+      });
     } catch (err) {
-      console.error("Error al anular la venta:", err);
-      const msg =
-        err.response?.data?.detail ||
-        err.response?.data?.estado ||
-        "No se pudo anular la venta.";
-      setSaleError(msg);
-    } finally {
-      setProcessingSale(false);
+      console.error("Error al anular la venta", err);
+      // alert("No se pudo anular la venta");
     }
-  };
+  }
 
+  // --------------------------
+  // Render
+  // --------------------------
   return (
-    <div className="container py-4">
-      <div className="row g-5">
-        {/* IZQUIERDA */}
-        <div className="col-md-7">
-          <h1 className="h4 mb-3">Punto de Venta</h1>
+    <div className="p-4 lg:p-8">
+      <header className="mb-6">
+        <h1 className="text-3xl font-semibold">Punto de Venta</h1>
+      </header>
 
-          {/* Buscar */}
-          <div className="mb-3">
-            <label htmlFor="search-product" className="form-label">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* IZQUIERDA: buscador + carrito */}
+        <section>
+          {/* Buscar Producto */}
+          <div className="mb-4">
+            <label
+              htmlFor="buscador"
+              className="block text-lg font-medium text-gray-900 mb-2"
+            >
               Buscar Producto
             </label>
             <input
-              type="text"
-              id="search-product"
-              className="form-control"
+              id="buscador"
+              className="w-full border rounded px-3 py-2 text-base outline-none focus:ring focus:ring-blue-300"
               placeholder="Escriba código o nombre..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
             />
-            {loadingSearch && (
-              <div className="form-text">Buscando...</div>
+            {/* Lista sugerida */}
+            {sugeridos.length > 0 && (
+              <ul className="border rounded mt-2 bg-white shadow-md max-h-60 overflow-y-auto text-sm">
+                {sugeridos.map((p) => (
+                  <li
+                    key={p.id}
+                    className="px-3 py-2 flex justify-between items-center hover:bg-blue-50 cursor-pointer"
+                    onClick={() => agregarAlCarrito(p)}
+                  >
+                    <span className="text-gray-800">
+                      {p.nombre} {/* <-- ajustar si tu backend usa otro campo */}
+                    </span>
+                    <span className="text-gray-500">
+                      {fmtMoney(p.precio_venta ?? p.precio ?? 0)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
 
-          {/* Resultados */}
-          {searchResults.length > 0 && (
-            <ul className="list-group mb-4">
-              {searchResults.map(p => (
-                <li
-                  key={p.id}
-                  className="list-group-item d-flex justify-content-between align-items-center"
-                >
-                  <div>
-                    {p.nombre}{" "}
-                    <span className="text-muted">
-                      (${parseFloat(p.precio_venta).toFixed(2)})
-                    </span>
-                  </div>
-                  <button
-                    className="btn btn-sm btn-success"
-                    onClick={() => addToCart(p)}
-                  >
-                    +
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-
           {/* Carrito */}
-          <h2 className="h5">Carrito</h2>
-          <div className="table-responsive">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Producto</th>
-                  <th style={{ width: '120px' }}>Cantidad</th>
-                  <th>Precio Unit.</th>
-                  <th>Subtotal</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cart.length === 0 && (
+          <div>
+            <h2 className="text-2xl font-semibold mb-3">Carrito</h2>
+
+            <div className="overflow-x-auto border rounded">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-gray-700 text-left">
                   <tr>
-                    <td colSpan="4" className="text-center text-muted">
-                      El carrito está vacío
-                    </td>
+                    <th className="px-3 py-2 font-semibold">Producto</th>
+                    <th className="px-3 py-2 font-semibold">Cantidad</th>
+                    <th className="px-3 py-2 font-semibold">Precio Unit.</th>
+                    <th className="px-3 py-2 font-semibold">Subtotal</th>
+                    <th className="px-3 py-2 font-semibold"></th>
                   </tr>
-                )}
+                </thead>
+                <tbody>
+                  {carrito.length === 0 ? (
+                    <tr>
+                      <td
+                        className="px-3 py-4 text-center text-gray-500"
+                        colSpan={5}
+                      >
+                        El carrito está vacío
+                      </td>
+                    </tr>
+                  ) : (
+                    carrito.map((item) => (
+                      <tr
+                        key={item.id}
+                        className="border-t last:border-b text-gray-800"
+                      >
+                        <td className="px-3 py-2">
+                          {item.nombre}
+                        </td>
 
-                {cart.map(item => (
-                  <tr key={item.id}>
-                    <td>{item.nombre}</td>
-                    <td>
-                      <input
-                        type="number"
-                        className="form-control form-control-sm"
-                        min="0"
-                        value={item.cantidad}
-                        onChange={(e) =>
-                          updateQuantity(
-                            item.id,
-                            parseInt(e.target.value, 10)
-                          )
-                        }
-                      />
-                    </td>
-                    <td>${parseFloat(item.precio_venta).toFixed(2)}</td>
-                    <td>
-                      $
-                      {(parseFloat(item.precio_venta || 0) *
-                        item.cantidad).toFixed(2)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number"
+                            min="1"
+                            className="w-20 border rounded px-2 py-1 text-sm"
+                            value={item.cantidad}
+                            onChange={(e) =>
+                              cambiarCantidad(
+                                item.id,
+                                Number(e.target.value)
+                              )
+                            }
+                          />
+                        </td>
 
-        {/* DERECHA */}
-        <div className="col-md-5">
-          <div className="card shadow-sm">
-            <div className="card-body">
-              <h2 className="h5 card-title">Resumen de la Venta</h2>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {fmtMoney(item.precio_venta)}
+                        </td>
 
-              {/* mensaje error */}
-              {saleError && (
-                <div className="alert alert-danger">{saleError}</div>
-              )}
+                        <td className="px-3 py-2 whitespace-nowrap font-medium">
+                          {fmtMoney(item.precio_venta * item.cantidad)}
+                        </td>
 
-              <div className="d-flex justify-content-between align-items-center my-4">
-                <span className="h3">TOTAL</span>
-                <span className="h3">${totalVenta.toFixed(2)}</span>
-              </div>
-
-              <div className="d-grid gap-2">
-                <button
-                  className="btn btn-primary btn-lg"
-                  disabled={cart.length === 0 || processingSale}
-                  onClick={handleConfirmSale}
-                >
-                  {processingSale ? "Procesando..." : "Confirmar Venta"}
-                </button>
-
-                <button
-                  className="btn btn-outline-danger"
-                  disabled={cart.length === 0 || processingSale}
-                  onClick={() => setCart([])}
-                >
-                  Cancelar
-                </button>
-
-                {/* Info última venta + botón anular */}
-                {lastSale && (
-                  <div className="alert alert-secondary small mb-0">
-                    <div>
-                      Última venta: #{lastSale.id} – Estado:{" "}
-                      <strong>{lastSale.estado}</strong>
-                    </div>
-                    <div>
-                      Total: $
-                      {parseFloat(lastSale.total || 0).toFixed(2)}
-                    </div>
-
-                    <button
-                      className="btn btn-warning btn-sm mt-2"
-                      disabled={
-                        processingSale ||
-                        lastSale.estado === "ANULADA"
-                      }
-                      onClick={handleAnnulLastSale}
-                    >
-                      {lastSale.estado === "ANULADA"
-                        ? "Ya anulada"
-                        : "Anular Última Venta"}
-                    </button>
-                  </div>
-                )}
-              </div>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            className="text-red-600 hover:underline text-sm"
+                            onClick={() => quitarDelCarrito(item.id)}
+                          >
+                            Quitar
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
+        </section>
 
-          <div className="text-center mt-3">
-            <button
-              className="btn btn-link text-muted"
-              onClick={() => nav("/productos")}
-            >
-              ↩ Ir a Productos
-            </button>
-          </div>
-        </div>
+        {/* DERECHA: resumen / total / botones / ultima venta */}
+        <aside className="border rounded p-4 shadow-sm bg-white flex flex-col gap-4">
+
+          {/* Banner verde de venta confirmada */}
+          {flashOk && (
+            <div className="rounded p-3 text-sm font-medium text-green-900 bg-green-100 border border-green-300">
+              ✅ Venta #{flashOk.numero} confirmada (
+              {fmtMoney(flashOk.total)})
+            </div>
+          )}
+
+          <ResumenDeVenta
+            total={totalVenta}
+            ultimaVenta={ultimaVenta}
+            onConfirmar={handleConfirmarVenta}
+            onCancelar={handleCancelarVenta}
+            onAnularUltima={handleAnularUltimaVenta}
+            cargandoConfirmar={cargandoConfirmar}
+          />
+        </aside>
       </div>
     </div>
   );
