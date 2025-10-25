@@ -11,4 +11,4 @@ export const listSuppliers = () => {
   // Asumimos que la paginación está activada, pedimos una página grande.
   return api.get('/catalogo/proveedores/', { params: { page_size: 100 } });
 };
-export const fetchProductos = (params) => api.get('/productos/', { params });
+export const fetchProductos = (params) => api.get('/catalogo/productos/', { params });
