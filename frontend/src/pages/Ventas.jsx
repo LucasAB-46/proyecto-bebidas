@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../api/client.jsx";
-import ResumenDeVenta from "../components/ResumenDeVenta.jsx";
+import ResumenDeVenta from "./ResumenDeVenta.jsx";
 
 // Util: formatear $ con separador miles
 function fmtMoney(n) {
