@@ -1,11 +1,12 @@
+/* ---------- Reset base del template Vite ---------- */
 :root {
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
   color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+  color: #213547;
+  background-color: #ffffff;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -13,26 +14,35 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Links genéricos en tu app (NO navbar, el navbar lo estilamos aparte) */
 a {
   font-weight: 500;
   color: #646cff;
-  text-decoration: inherit;
+  text-decoration: none;
 }
 a:hover {
   color: #535bf2;
 }
 
+/* IMPORTANTE:
+   Sacamos el display:flex global y el centering del body,
+   porque rompe Bootstrap container/row/col
+*/
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
   min-width: 320px;
   min-height: 100vh;
+  background-color: #ffffff;
+  color: #213547;
+  /* dejamos que Bootstrap maneje el layout */
 }
 
 h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+  font-size: 2rem;
+  line-height: 1.2;
+  margin-bottom: 1rem;
+  font-weight: 600;
+  color: #213547;
 }
 
 button {
@@ -54,15 +64,26 @@ button:focus-visible {
   outline: 4px auto -webkit-focus-ring-color;
 }
 
-@media (prefers-color-scheme: light) {
+/* Modo claro vs oscuro
+   - Si algún dispositivo pide dark mode, que no quede todo negro tipo Vite
+   - Forzamos navbar claro aunque el sistema esté en dark
+*/
+@media (prefers-color-scheme: dark) {
   :root {
-    color: #213547;
-    background-color: #ffffff;
+    color: #f0f0f0;
+    background-color: #1a1a1a;
   }
-  a:hover {
-    color: #747bff;
+  body {
+    background-color: #1a1a1a;
+    color: #f0f0f0;
   }
+
+  /* botones default */
   button {
-    background-color: #f9f9f9;
+    background-color: #2a2a2a;
+    color: #f0f0f0;
+  }
+  button:hover {
+    border-color: #747bff;
   }
 }

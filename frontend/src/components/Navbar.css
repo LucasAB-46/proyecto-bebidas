@@ -1,0 +1,111 @@
+/* Marca "InnovaTI by LB" en rojo estilo mini-brand */
+.navbar-brand {
+  font-size: 1rem;            /* compacto tipo SaaS */
+  font-weight: 700;
+  color: #c1121f !important;  /* rojo firme */
+  letter-spacing: -0.02em;
+}
+
+/* Nav principal */
+.navbar {
+  background-color: #ffffff !important;
+  border-bottom: 1px solid rgba(0,0,0,0.08) !important;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.03);
+}
+
+/* Links de primer nivel */
+.navbar-nav .nav-link {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #344054; /* gris oscuro pro */
+  padding: 0.6rem 0.9rem;
+  display: flex;
+  align-items: center;
+}
+
+.navbar-nav .nav-link:hover,
+.navbar-nav .nav-link:focus {
+  color: #000000;
+  background-color: rgba(0,0,0,0.03);
+  border-radius: 6px;
+  text-decoration: none;
+}
+
+/* Estado activo (NavLink de react-router pone .active) */
+.navbar-nav .nav-link.active {
+  color: #000;
+  background-color: rgba(255, 0, 0, 0.06); /* leve rojito */
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+/* Dropdown trigger (Ventas / Compras) */
+.navbar-nav .dropdown-toggle::after {
+  margin-left: 0.4rem;
+  vertical-align: middle;
+  border-top-width: 0.4em;
+  border-right-width: 0.4em;
+  border-left-width: 0.4em;
+}
+
+/* Menú dropdown */
+.dropdown-menu {
+  border-radius: 8px;
+  border: 1px solid rgba(0,0,0,0.08);
+  box-shadow:
+    0 20px 24px -4px rgba(16,24,40,0.08),
+    0 8px 8px -4px rgba(16,24,40,0.03);
+  min-width: 200px;
+  padding: 0.4rem 0;
+}
+
+.dropdown-item {
+  font-size: 0.9rem;
+  font-weight: 500;
+  padding: 0.6rem 1rem;
+  color: #344054;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dropdown-item:hover,
+.dropdown-item:focus {
+  background-color: rgba(255,0,0,0.06);
+  color: #000;
+}
+
+/* Usuario + botón salir (derecha) */
+.nav-user-box {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+}
+
+.nav-user-box .username-pill {
+  font-size: 0.8rem;
+  background-color: #f2f4f7;
+  color: #344054;
+  border-radius: 999px;
+  padding: 0.4rem 0.75rem;
+  line-height: 1.1;
+  font-weight: 500;
+  border: 1px solid rgba(0,0,0,0.05);
+}
+
+/* Botón salir */
+.nav-user-box .btn-logout {
+  font-size: 0.8rem;
+  line-height: 1.1;
+  padding: 0.45rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #d0d5dd;
+  background-color: #fff;
+  color: #344054;
+}
+.nav-user-box .btn-logout:hover {
+  background-color: #f9fafb;
+  border-color: #d0d5dd;
+  color: #000;
+}

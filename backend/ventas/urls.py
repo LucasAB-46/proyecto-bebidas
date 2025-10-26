@@ -1,8 +1,16 @@
-# ventas/urls.py
-from rest_framework.routers import DefaultRouter
-from .views import VentaViewSet
+from django.urls import path
+from . import views
+from .views_historial import VentaHistorialView, VentaDetalleView
 
-router = DefaultRouter()
-router.register(r'', VentaViewSet, basename='venta')
+urlpatterns = [
+    # crear venta borrador, listar ventas existentes si usás GET
+    path("", views.VentaListCreateView.as_view(), name="venta-list-create"),
 
-urlpatterns = router.urls
+    # confirmar / anular
+    path("<int:pk>/confirmar/", views.VentaConfirmView.as_view(), name="venta-confirm"),
+    path("<int:pk>/anular/",    views.VentaAnnulView.as_view(),    name="venta-annul"),
+
+    # historial + detalle lectura
+    path("historial/", VentaHistorialView.as_view(), name="venta-historial"),
+    path("<int:pk>/",  VentaDetalleView.as_view(),   name="venta-detail"),
+]

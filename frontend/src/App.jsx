@@ -1,41 +1,39 @@
-// src/App.jsx 
-
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Navbar from "./components/Navbar.jsx";
 import Login from "./pages/Login.jsx";
 import Productos from "./pages/Productos.jsx";
 import Ventas from "./pages/Ventas.jsx";
 import Compras from "./pages/Compras.jsx";
+import HistorialVentas from "./pages/HistorialVentas.jsx";
+import HistorialCompras from "./pages/HistorialCompras.jsx";
 import ProductoNuevo from "./pages/ProductoNuevo.jsx";
 import ProductoEditar from "./pages/ProductoEditar.jsx";
+
 import { LocalProvider } from "./context/LocalContext.jsx";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import PrivateRoute from "./routes/PrivateRoute.jsx";
-import Dashboard from "./pages/Dashboard.jsx";
-// La función RequireAuth ya no es necesaria, la hemos reemplazado por el componente PrivateRoute.
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <LocalProvider>
+    <AuthProvider>
+      <LocalProvider>
+        <BrowserRouter>
           <Navbar />
 
           <Routes>
-            {/* Home: redirige al listado */}
-            <Route path="/" element={<Navigate to="/productos" replace />} />
-
-            {/* Pública */}
+            {/* público */}
             <Route path="/login" element={<Login />} />
 
-            {/* Privadas (ahora usando PrivateRoute) */}
+            {/* privado */}
             <Route
-              path="/dashboard"
-              element={<PrivateRoute>
-              <Dashboard />
-            </PrivateRoute>
-            }
+              path="/"
+              element={
+                <PrivateRoute>
+                  <Navigate to="/productos" />
+                </PrivateRoute>
+              }
             />
+
             <Route
               path="/productos"
               element={
@@ -44,22 +42,7 @@ export default function App() {
                 </PrivateRoute>
               }
             />
-            <Route
-              path="/ventas"
-              element={
-                <PrivateRoute>
-                  <Ventas />
-                </PrivateRoute>
-              }
-            />
-            <Route
-              path="/compras"
-              element={
-                <PrivateRoute>
-                  <Compras />
-                </PrivateRoute>
-              }
-            />
+
             <Route
               path="/productos/nuevo"
               element={
@@ -68,6 +51,7 @@ export default function App() {
                 </PrivateRoute>
               }
             />
+
             <Route
               path="/productos/:id/editar"
               element={
@@ -77,11 +61,47 @@ export default function App() {
               }
             />
 
-            {/* 404 */}
-            <Route path="*" element={<div className="container p-4">404 – Página no encontrada</div>} />
+            <Route
+              path="/ventas"
+              element={
+                <PrivateRoute>
+                  <Ventas />
+                </PrivateRoute>
+              }
+            />
+
+            <Route
+              path="/ventas/historial"
+              element={
+                <PrivateRoute>
+                  <HistorialVentas />
+                </PrivateRoute>
+              }
+            />
+
+            <Route
+              path="/compras"
+              element={
+                <PrivateRoute>
+                  <Compras />
+                </PrivateRoute>
+              }
+            />
+
+            <Route
+              path="/compras/historial"
+              element={
+                <PrivateRoute>
+                  <HistorialCompras />
+                </PrivateRoute>
+              }
+            />
+
+            {/* fallback */}
+            <Route path="*" element={<Navigate to="/" />} />
           </Routes>
-        </LocalProvider>
-      </AuthProvider>
-    </BrowserRouter>
+        </BrowserRouter>
+      </LocalProvider>
+    </AuthProvider>
   );
 }

@@ -2,6 +2,7 @@
 
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import "./Navbar.css";
 
 export default function Navbar() {
   const nav = useNavigate();
@@ -19,38 +20,100 @@ export default function Navbar() {
           InnovaTI by LB
         </NavLink>
 
-        <button className="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nav">
+        <button
+          className="navbar-toggler"
+          type="button"
+          data-bs-toggle="collapse"
+          data-bs-target="#nav"
+        >
           <span className="navbar-toggler-icon"></span>
         </button>
 
         <div id="nav" className="collapse navbar-collapse">
-          {/* Los links de navegación se muestran si hay un usuario */}
           {user && (
             <ul className="navbar-nav me-auto">
-              <li className="nav-item"><NavLink className="nav-link" to="/productos">Productos</NavLink></li>
-              <li className="nav-item"><NavLink className="nav-link" to="/ventas">Ventas</NavLink></li>
-              {isAdmin && (
-                <li className="nav-item"><NavLink className="nav-link" to="/compras">Compras</NavLink></li>
-              )}
+              {/* Productos */}
               <li className="nav-item">
-                <a className="nav-link" href="/dashboard">Dashboard
-                </a>
+                <NavLink className="nav-link" to="/productos">
+                  Productos
+                </NavLink>
               </li>
 
+              {/* Ventas */}
+              <li className="nav-item dropdown">
+                <a
+                  className="nav-link dropdown-toggle"
+                  href="#"
+                  role="button"
+                  data-bs-toggle="dropdown"
+                >
+                  Ventas
+                </a>
+                <ul className="dropdown-menu">
+                  <li>
+                    <NavLink className="dropdown-item" to="/ventas">
+                      Punto de Venta
+                    </NavLink>
+                  </li>
+                  <li>
+                    <NavLink className="dropdown-item" to="/ventas/historial">
+                      Historial de Ventas
+                    </NavLink>
+                  </li>
+                </ul>
+              </li>
+
+              {/* Compras (solo admin) */}
+              {isAdmin && (
+                <li className="nav-item dropdown">
+                  <a
+                    className="nav-link dropdown-toggle"
+                    href="#"
+                    role="button"
+                    data-bs-toggle="dropdown"
+                  >
+                    Compras
+                  </a>
+                  <ul className="dropdown-menu">
+                    <li>
+                      <NavLink className="dropdown-item" to="/compras">
+                        Ingreso de Compras
+                      </NavLink>
+                    </li>
+                    <li>
+                      <NavLink
+                        className="dropdown-item"
+                        to="/compras/historial"
+                      >
+                        Historial de Compras
+                      </NavLink>
+                    </li>
+                  </ul>
+                </li>
+              )}
+
+              {/* Dashboard */}
+              <li className="nav-item">
+                <NavLink className="nav-link" to="/dashboard">
+                  Dashboard
+                </NavLink>
+              </li>
             </ul>
           )}
 
-          {/* --- INICIO DE LA CORRECCIÓN --- */}
-          {/* El saludo y el botón de salir se muestran si hay un usuario, fuera de la lista de links */}
+          {/* Usuario + Salir */}
           {user && (
-            <div className="d-flex align-items-center gap-3 ms-auto">
-              <span className="text-muted small">{user.username}</span>
-              <button className="btn btn-outline-secondary btn-sm" onClick={handleLogout}>
+            <div className="nav-user-box ms-auto">
+              <span className="username-pill">{user.username}</span>
+              <button
+                className="btn-logout"
+                type="button"
+                onClick={handleLogout}
+              >
                 Salir
               </button>
             </div>
           )}
-          {/* --- FIN DE LA CORRECCIÓN --- */}
         </div>
       </div>
     </nav>
