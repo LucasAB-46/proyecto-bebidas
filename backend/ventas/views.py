@@ -1,44 +1,84 @@
+# backend/ventas/views.py
+
 from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-
+from rest_framework.decorators import action
 from django.db import transaction
-
+from catalogo.models import Producto
 from .models import Venta
 from .serializers import VentaWriteSerializer, VentaReadSerializer
-from .services import confirmar_venta, anular_venta
 
 
 class VentaViewSet(viewsets.ModelViewSet):
-    queryset = Venta.objects.all().order_by("-id")
-    permission_classes = [IsAuthenticated]
+    queryset = Venta.objects.all().select_related("local", "usuario")
+    serializer_class = VentaWriteSerializer
 
     def get_serializer_class(self):
-        if self.action in ("create", "update", "partial_update"):
-            return VentaWriteSerializer
-        return VentaReadSerializer
+        # Cuando pedimos data (GET list/retrieve) devolvemos el serializer de lectura.
+        if self.action in ["list", "retrieve"]:
+            return VentaReadSerializer
+        # Cuando creamos/actualizamos usamos el serializer de escritura.
+        return VentaWriteSerializer
 
-    def _local_id(self):
-        # el mismo truco que usamos en Compras
-        hdr = self.request.headers.get("X-Local-ID") or self.request.META.get("HTTP_X_LOCAL_ID")
-        try:
-            return int(hdr)
-        except (TypeError, ValueError):
-            return 1  # fallback por ahora
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy()
 
-    def perform_create(self, serializer):
-        serializer.save(local_id=self._local_id(), usuario=self.request.user)
+        # Por ahora local fijo = 1 y usuario null/anon
+        data["local_id"] = 1
 
-    def perform_update(self, serializer):
-        serializer.save(local_id=self._local_id(), usuario=self.request.user)
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+
+        venta = serializer.save(local_id=1, usuario=request.user if request.user.is_authenticated else None)
+
+        return Response(
+            VentaReadSerializer(venta).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=True, methods=["post"])
     def confirmar(self, request, pk=None):
-        venta = confirmar_venta(pk, local_id=self._local_id())
-        return Response(VentaReadSerializer(venta).data, status=status.HTTP_200_OK)
+        venta = self.get_object()
+
+        if venta.estado != "borrador":
+            return Response(
+                {"estado": "Sólo BORRADOR puede confirmarse"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            venta.estado = "confirmada"
+            venta.save(update_fields=["estado"])
+
+            # bajar stock y registrar precio de venta
+            for det in venta.detalles.select_related("producto").all():
+                prod = det.producto
+                # restar stock
+                prod.stock_actual = (prod.stock_actual or 0) - det.cantidad
+                # opcional: podríamos guardar último precio_venta
+                prod.precio_venta = det.precio_unitario
+                prod.save(update_fields=["stock_actual", "precio_venta"])
+
+        return Response(VentaReadSerializer(venta).data)
 
     @action(detail=True, methods=["post"])
     def anular(self, request, pk=None):
-        venta = anular_venta(pk, local_id=self._local_id())
-        return Response(VentaReadSerializer(venta).data, status=status.HTTP_200_OK)
+        venta = self.get_object()
+
+        if venta.estado != "confirmada":
+            return Response(
+                {"estado": "Sólo CONFIRMADA puede anularse"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            venta.estado = "anulada"
+            venta.save(update_fields=["estado"])
+
+            # devolver stock
+            for det in venta.detalles.select_related("producto").all():
+                prod = det.producto
+                prod.stock_actual = (prod.stock_actual or 0) + det.cantidad
+                prod.save(update_fields=["stock_actual"])
+
+        return Response(VentaReadSerializer(venta).data)
