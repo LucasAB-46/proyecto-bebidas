@@ -34,6 +34,7 @@ urlpatterns = [
     path("api/compras/",  include("compras.urls")),
     path("api/ventas/",   include("ventas.urls")),
     path("api/core/",     include("core_app.urls")),
+    path("api/reportes/", include("reportes.urls")), 
 
     # Auth
     path("api/auth/token/",   MyTokenObtainPairView.as_view(), name="token_obtain_pair"),

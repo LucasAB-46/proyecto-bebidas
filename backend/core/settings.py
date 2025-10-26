@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     "catalogo",
     "compras",
     "ventas",
+    "reportes",
 ]
 
 # Solo en dev si está instalado django-extensions
