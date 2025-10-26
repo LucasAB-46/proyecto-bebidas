@@ -32,6 +32,11 @@ export default function Navbar() {
               {isAdmin && (
                 <li className="nav-item"><NavLink className="nav-link" to="/compras">Compras</NavLink></li>
               )}
+              <li className="nav-item">
+                <a className="nav-link" href="/dashboard">Dashboard
+                </a>
+              </li>
+
             </ul>
           )}
 

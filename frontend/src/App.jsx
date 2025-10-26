@@ -11,6 +11,7 @@ import ProductoEditar from "./pages/ProductoEditar.jsx";
 import { LocalProvider } from "./context/LocalContext.jsx";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import PrivateRoute from "./routes/PrivateRoute.jsx";
+import Dashboard from "./pages/Dashboard.jsx";
 // La función RequireAuth ya no es necesaria, la hemos reemplazado por el componente PrivateRoute.
 
 export default function App() {
@@ -28,6 +29,13 @@ export default function App() {
             <Route path="/login" element={<Login />} />
 
             {/* Privadas (ahora usando PrivateRoute) */}
+            <Route
+              path="/dashboard"
+              element={<PrivateRoute>
+              <Dashboard />
+            </PrivateRoute>
+            }
+            />
             <Route
               path="/productos"
               element={
