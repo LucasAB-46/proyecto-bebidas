@@ -1,168 +1,226 @@
+// src/pages/Dashboard.jsx
 import { useEffect, useState } from "react";
-import { fetchResumenDia } from "../services/reportes.js";
+import { getResumenFinanciero, getTopProductos } from "../services/reportes.js";
 
 export default function Dashboard() {
-  const [data, setData] = useState(null);
-  const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState("");
+  // rango de fechas
+  const hoyISO = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
 
+  const [desde, setDesde] = useState(hoyISO);
+  const [hasta, setHasta] = useState(hoyISO);
+
+  // datos resumen financiero
+  const [resumen, setResumen] = useState(null);
+  const [cargandoResumen, setCargandoResumen] = useState(false);
+  const [errorResumen, setErrorResumen] = useState("");
+
+  // top productos
+  const [topProductos, setTopProductos] = useState([]);
+  const [cargandoTop, setCargandoTop] = useState(false);
+  const [errorTop, setErrorTop] = useState("");
+
+  // función para cargar ambos panels
+  const fetchData = async () => {
+    setCargandoResumen(true);
+    setCargandoTop(true);
+    setErrorResumen("");
+    setErrorTop("");
+
+    const params = { desde, hasta };
+
+    try {
+      const rf = await getResumenFinanciero(params);
+      setResumen(rf.data);
+    } catch (err) {
+      console.error("Error resumen financiero", err);
+      setErrorResumen(
+        err.response?.data?.detail || "No se pudo cargar el resumen financiero."
+      );
+    } finally {
+        setCargandoResumen(false);
+    }
+
+    try {
+      const tp = await getTopProductos({ ...params, limit: 5 });
+      setTopProductos(tp.data || []);
+    } catch (err) {
+      console.error("Error top productos", err);
+      setErrorTop(
+        err.response?.data?.detail || "No se pudieron cargar los productos más vendidos."
+      );
+    } finally {
+        setCargandoTop(false);
+    }
+  };
+
+  // cargar al inicio
   useEffect(() => {
-    fetchResumenDia()
-      .then((res) => {
-        setData(res.data);
-      })
-      .catch((err) => {
-        console.error("Error cargando resumen del día", err);
-        setError("No se pudo cargar el resumen del día.");
-      })
-      .finally(() => {
-        setCargando(false);
-      });
-  }, []);
+    fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // una sola vez al montar
 
-  if (cargando) {
-    return (
-      <div className="container mt-4">
-        <h2>Dashboard</h2>
-        <p>Cargando...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="container mt-4">
-        <h2>Dashboard</h2>
-        <p className="text-danger">{error}</p>
-      </div>
-    );
-  }
-
-  const ventasHoy = data?.ventas ?? { cantidad: "0", total: "0.00" };
-  const comprasHoy = data?.compras ?? { cantidad: "0", total: "0.00" };
-  const balance = data?.balance ?? "0.00";
-
-  const stockBajo = data?.stock_bajo ?? [];
-  const ultimos = data?.ultimos_movimientos ?? {};
+  const handleAplicar = () => {
+    fetchData();
+  };
 
   return (
     <div className="container mt-4">
-      <h2 className="mb-3">Dashboard</h2>
-      <p className="text-muted">Fecha: {data?.fecha}</p>
+      <h1 className="mb-4">Dashboard</h1>
 
-      {/* KPIs */}
-      <div className="row g-3 mb-4">
-        <div className="col-12 col-md-4">
-          <div className="card shadow-sm">
-            <div className="card-body">
-              <h5 className="card-title">Ventas hoy</h5>
-              <p className="card-text mb-1">
-                Cantidad: {ventasHoy.cantidad}
-              </p>
-              <p className="card-text fw-bold">
-                Total: ${Number(ventasHoy.total).toLocaleString("es-AR")}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="col-12 col-md-4">
-          <div className="card shadow-sm">
-            <div className="card-body">
-              <h5 className="card-title">Compras hoy</h5>
-              <p className="card-text mb-1">
-                Cantidad: {comprasHoy.cantidad}
-              </p>
-              <p className="card-text fw-bold">
-                Total: ${Number(comprasHoy.total).toLocaleString("es-AR")}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="col-12 col-md-4">
-          <div className="card shadow-sm">
-            <div className="card-body">
-              <h5 className="card-title">Balance</h5>
-              <p className="card-text fw-bold">
-                ${Number(balance).toLocaleString("es-AR")}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Últimos movimientos */}
-      <div className="row g-3 mb-4">
-        <div className="col-12 col-md-6">
-          <div className="card shadow-sm h-100">
-            <div className="card-body">
-              <h5 className="card-title">Última Venta</h5>
-              {ultimos.venta ? (
-                <>
-                  <p className="mb-1">
-                    #{ultimos.venta.id} – {ultimos.venta.estado}
-                  </p>
-                  <p className="mb-1">
-                    Total: ${Number(ultimos.venta.total).toLocaleString("es-AR")}
-                  </p>
-                  <p className="text-muted mb-0">Hora: {ultimos.venta.hora}</p>
-                </>
-              ) : (
-                <p className="text-muted mb-0">No hay ventas hoy.</p>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="col-12 col-md-6">
-          <div className="card shadow-sm h-100">
-            <div className="card-body">
-              <h5 className="card-title">Última Compra</h5>
-              {ultimos.compra ? (
-                <>
-                  <p className="mb-1">
-                    #{ultimos.compra.id} – {ultimos.compra.estado}
-                  </p>
-                  <p className="mb-1">
-                    Total: ${Number(ultimos.compra.total).toLocaleString("es-AR")}
-                  </p>
-                  <p className="text-muted mb-0">Hora: {ultimos.compra.hora}</p>
-                </>
-              ) : (
-                <p className="text-muted mb-0">No hay compras hoy.</p>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Stock bajo */}
-      <div className="card shadow-sm">
+      {/* Filtros de fecha */}
+      <div className="card mb-4">
         <div className="card-body">
-          <h5 className="card-title">Stock bajo (≤5 u.)</h5>
-          {stockBajo.length === 0 ? (
-            <p className="text-muted mb-0">Todo OK 🎉</p>
-          ) : (
-            <div className="table-responsive">
-              <table className="table align-middle mb-0">
-                <thead>
-                  <tr>
-                    <th>Producto</th>
-                    <th>Stock</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stockBajo.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.nombre}</td>
-                      <td>{row.stock}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <h5 className="card-title fw-bold mb-3">Rango de fechas</h5>
+          <div className="row g-3 align-items-end">
+            <div className="col-12 col-md-4">
+              <label className="form-label">Desde</label>
+              <input
+                type="date"
+                value={desde}
+                className="form-control"
+                onChange={(e) => setDesde(e.target.value)}
+              />
             </div>
-          )}
+            <div className="col-12 col-md-4">
+              <label className="form-label">Hasta</label>
+              <input
+                type="date"
+                value={hasta}
+                className="form-control"
+                onChange={(e) => setHasta(e.target.value)}
+              />
+            </div>
+            <div className="col-12 col-md-4">
+              <button
+                className="btn btn-primary w-100"
+                style={{ backgroundColor: "#4e7cf5", borderColor: "#4e7cf5" }}
+                onClick={handleAplicar}
+              >
+                Aplicar
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Resumen financiero */}
+      <div className="row">
+        <div className="col-12 col-lg-6 mb-4">
+          <div className="card h-100 shadow-sm">
+            <div className="card-body">
+              <h5 className="card-title fw-bold mb-3">
+                Resumen financiero
+              </h5>
+
+              {cargandoResumen ? (
+                <p>Cargando...</p>
+              ) : errorResumen ? (
+                <div className="alert alert-danger">{errorResumen}</div>
+              ) : resumen ? (
+                <>
+                  <p className="mb-1 text-muted">
+                    Desde {resumen.desde} hasta {resumen.hasta}
+                  </p>
+
+                  <div className="d-flex justify-content-between mb-2">
+                    <span>Ventas ($)</span>
+                    <strong>
+                      {Number(resumen.total_ventas || 0).toLocaleString(
+                        "es-AR",
+                        { minimumFractionDigits: 2 }
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="d-flex justify-content-between mb-2">
+                    <span>Compras ($)</span>
+                    <strong>
+                      {Number(resumen.total_compras || 0).toLocaleString(
+                        "es-AR",
+                        { minimumFractionDigits: 2 }
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="d-flex justify-content-between mb-2">
+                    <span>Margen bruto ($)</span>
+                    <strong>
+                      {Number(resumen.margen_bruto || 0).toLocaleString(
+                        "es-AR",
+                        { minimumFractionDigits: 2 }
+                      )}
+                    </strong>
+                  </div>
+
+                  <hr />
+
+                  <div className="d-flex justify-content-between mb-1">
+                    <span># Ventas</span>
+                    <strong>{resumen.cantidad_ventas}</strong>
+                  </div>
+
+                  <div className="d-flex justify-content-between">
+                    <span># Compras</span>
+                    <strong>{resumen.cantidad_compras}</strong>
+                  </div>
+                </>
+              ) : (
+                <p className="text-muted">Sin datos.</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Top productos vendidos */}
+        <div className="col-12 col-lg-6 mb-4">
+          <div className="card h-100 shadow-sm">
+            <div className="card-body">
+              <h5 className="card-title fw-bold mb-3">
+                Top productos vendidos
+              </h5>
+
+              {cargandoTop ? (
+                <p>Cargando...</p>
+              ) : errorTop ? (
+                <div className="alert alert-danger">{errorTop}</div>
+              ) : topProductos.length === 0 ? (
+                <p className="text-muted">No hay ventas en este rango.</p>
+              ) : (
+                <div className="table-responsive">
+                  <table className="table align-middle mb-0">
+                    <thead>
+                      <tr>
+                        <th>Producto</th>
+                        <th className="text-end">Cant. vendida</th>
+                        <th className="text-end">Facturación $</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {topProductos.map((row) => (
+                        <tr key={row.producto_id}>
+                          <td style={{ minWidth: "140px" }}>
+                            {row.producto_nombre}
+                          </td>
+                          <td className="text-end">
+                            {Number(row.cantidad_vendida || 0).toLocaleString(
+                              "es-AR",
+                              { minimumFractionDigits: 2 }
+                            )}
+                          </td>
+                          <td className="text-end">
+                            {Number(row.facturacion || 0).toLocaleString(
+                              "es-AR",
+                              { minimumFractionDigits: 2 }
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

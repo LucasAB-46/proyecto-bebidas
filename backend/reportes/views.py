@@ -1,263 +1,155 @@
-from datetime import datetime, time
+# reportes/views.py
+from datetime import datetime
 from decimal import Decimal
-
-from django.utils import timezone
-from django.db.models import Sum, Count
-from rest_framework.views import APIView
+from django.db.models import Sum, F
+from django.utils.timezone import make_aware
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
-from ventas.models import Venta
+from ventas.models import Venta, VentaDetalle
 from compras.models import Compra
 from catalogo.models import Producto
 
 
-def _inicio_fin_de_fecha(date_obj):
+def _parse_date(param_name, request, default=None, end_of_day=False):
     """
-    Helper: dado un date (YYYY-MM-DD) devuelve (inicio, fin)
-    del día en esa timezone.
+    Lee una fecha tipo '2025-10-26' del query param.
+    Si no viene, usa default.
+    Si end_of_day=True, fuerza hora 23:59:59.
+    Devuelve datetime aware.
     """
-    tz = timezone.get_current_timezone()
-    start_dt = timezone.make_aware(
-        datetime.combine(date_obj, time.min),
-        tz,
-    )
-    end_dt = timezone.make_aware(
-        datetime.combine(date_obj, time.max),
-        tz,
-    )
-    return start_dt, end_dt
+    raw = request.query_params.get(param_name)
+    if not raw:
+        if default is None:
+            return None
+        dt = default
+    else:
+        # esperamos formato YYYY-MM-DD
+        dt = datetime.strptime(raw, "%Y-%m-%d")
+
+    if end_of_day:
+        dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    else:
+        dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # importante: hacer aware para comparar con DateTimeField
+    return make_aware(dt)
 
 
 class ResumenFinancieroView(APIView):
     """
     GET /api/reportes/financieros/?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
-    Devuelve totales de ventas/compras en el rango y el balance.
-    Este endpoint ya existía (lo usás en Swagger), lo mantenemos vivo.
-    """
 
+    Devuelve:
+    {
+      "desde": "2025-10-01",
+      "hasta": "2025-10-26",
+      "total_ventas": "...",
+      "total_compras": "...",
+      "margen_bruto": "...",  # ventas - compras
+      "cantidad_ventas": 12,
+      "cantidad_compras": 4
+    }
+    """
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, *args, **kwargs):
-        # 1. local desde header
-        local_id = request.headers.get("X-Local-ID")
-        if not local_id:
-            return Response(
-                {"detail": "Falta header X-Local-ID"},
-                status=400,
-            )
+    def get(self, request):
+        user = request.user
 
-        # 2. leer query params
-        desde_str = request.query_params.get("desde")
-        hasta_str = request.query_params.get("hasta")
+        # por ahora usamos local_id fijo 1 como en el resto del sistema
+        local_id = request.headers.get("X-Local-ID", "1")
 
-        # si no vienen fechas, usamos HOY como rango
-        hoy_local = timezone.localtime().date()
+        # rango de fechas
+        hasta_dt = _parse_date("hasta", request, default=datetime.utcnow(), end_of_day=True)
+        desde_dt = _parse_date("desde", request, default=hasta_dt, end_of_day=False)
+
+        # --- Ventas confirmadas en rango ---
+        ventas_qs = Venta.objects.filter(
+            local_id=local_id,
+            estado="confirmada",
+            fecha__range=[desde_dt, hasta_dt],
+        )
+
+        ventas_total = ventas_qs.aggregate(s=Sum("total"))["s"] or Decimal("0")
+        ventas_count = ventas_qs.count()
+
+        # --- Compras confirmadas en rango ---
+        compras_qs = Compra.objects.filter(
+            local_id=local_id,
+            estado="confirmada",
+            fecha__range=[desde_dt, hasta_dt],
+        )
+
+        compras_total = compras_qs.aggregate(s=Sum("total"))["s"] or Decimal("0")
+        compras_count = compras_qs.count()
+
+        margen = ventas_total - compras_total
+
+        data = {
+            "desde": desde_dt.date().isoformat(),
+            "hasta": hasta_dt.date().isoformat(),
+            "total_ventas": str(ventas_total),
+            "total_compras": str(compras_total),
+            "margen_bruto": str(margen),
+            "cantidad_ventas": ventas_count,
+            "cantidad_compras": compras_count,
+        }
+        return Response(data)
+
+
+class TopProductosView(APIView):
+    """
+    GET /api/reportes/top-productos/?desde=YYYY-MM-DD&hasta=YYYY-MM-DD&limit=5
+
+    Devuelve array:
+    [
+      {
+        "producto_id": 12,
+        "producto_nombre": "Coca Cola 2.25",
+        "cantidad_vendida": "18.0000",
+        "facturacion": "5400.00"
+      },
+      ...
+    ]
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        local_id = request.headers.get("X-Local-ID", "1")
+
+        hasta_dt = _parse_date("hasta", request, default=datetime.utcnow(), end_of_day=True)
+        desde_dt = _parse_date("desde", request, default=hasta_dt, end_of_day=False)
 
         try:
-            if desde_str:
-                desde_date = datetime.strptime(desde_str, "%Y-%m-%d").date()
-            else:
-                desde_date = hoy_local
-
-            if hasta_str:
-                hasta_date = datetime.strptime(hasta_str, "%Y-%m-%d").date()
-            else:
-                hasta_date = hoy_local
+            limit = int(request.query_params.get("limit", "5"))
         except ValueError:
-            return Response(
-                {"detail": "Formato inválido. Use YYYY-MM-DD"},
-                status=400,
+            limit = 5
+
+        # Filtramos VentaDetalle de ventas confirmadas en rango
+        detalles_qs = (
+            VentaDetalle.objects
+            .filter(
+                venta__local_id=local_id,
+                venta__estado="confirmada",
+                venta__fecha__range=[desde_dt, hasta_dt],
             )
-
-        # normalizamos para incluir todos los días desde...hasta...
-        # ejemplo: si desde=2025-10-20 y hasta=2025-10-26
-        # queremos rango [20 00:00 ... 26 23:59:59]
-        tz = timezone.get_current_timezone()
-        inicio = timezone.make_aware(
-            datetime.combine(desde_date, time.min),
-            tz,
-        )
-        fin = timezone.make_aware(
-            datetime.combine(hasta_date, time.max),
-            tz,
-        )
-
-        # 3. Ventas confirmadas dentro del rango para ese local
-        ventas_qs = Venta.objects.filter(
-            local_id=local_id,
-            estado__iexact="confirmada",
-            fecha__gte=inicio,
-            fecha__lte=fin,
-        )
-
-        ventas_aggr = ventas_qs.aggregate(
-            cantidad=Count("id"),
-            total=Sum("total"),
-        )
-        ventas_cantidad = ventas_aggr["cantidad"] or 0
-        ventas_total = ventas_aggr["total"] or Decimal("0.00")
-
-        # 4. Compras confirmadas en el rango
-        compras_qs = Compra.objects.filter(
-            local_id=local_id,
-            estado__iexact="confirmada",
-            fecha__gte=inicio,
-            fecha__lte=fin,
-        )
-
-        compras_aggr = compras_qs.aggregate(
-            cantidad=Count("id"),
-            total=Sum("total"),
-        )
-        compras_cantidad = compras_aggr["cantidad"] or 0
-        compras_total = compras_aggr["total"] or Decimal("0.00")
-
-        # 5. Balance = ventas - compras
-        balance = ventas_total - compras_total
-
-        data = {
-            "periodo": {
-                "desde": inicio.isoformat(),
-                "hasta": fin.isoformat(),
-            },
-            "ventas": {
-                "cantidad": str(ventas_cantidad),
-                "total": str(ventas_total),
-            },
-            "compras": {
-                "cantidad": str(compras_cantidad),
-                "total": str(compras_total),
-            },
-            "balance": str(balance),
-        }
-
-        return Response(data, status=200)
-
-
-class ResumenDiaView(APIView):
-    """
-    GET /api/reportes/resumen-dia/
-    Devuelve:
-    - ventas de hoy
-    - compras de hoy
-    - balance
-    - stock bajo
-    - últimos movimientos
-    Este endpoint lo consume el Dashboard del frontend.
-    """
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, *args, **kwargs):
-        # 1. Local
-        local_id = request.headers.get("X-Local-ID")
-        if not local_id:
-            return Response(
-                {"detail": "Falta header X-Local-ID"},
-                status=400,
+            .values("producto_id", "producto__nombre")
+            .annotate(
+                cantidad_vendida=Sum("cantidad"),
+                facturacion=Sum(F("cantidad") * F("precio_unitario")),
             )
-
-        # 2. Rango del día actual
-        ahora = timezone.localtime()
-        inicio_hoy, fin_hoy = _inicio_fin_de_fecha(ahora.date())
-
-        # 3. Ventas confirmadas hoy
-        ventas_qs = Venta.objects.filter(
-            local_id=local_id,
-            estado__iexact="confirmada",
-            fecha__gte=inicio_hoy,
-            fecha__lte=fin_hoy,
+            .order_by("-cantidad_vendida")[:limit]
         )
 
-        ventas_aggr = ventas_qs.aggregate(
-            cantidad=Count("id"),
-            total=Sum("total"),
-        )
-        ventas_cantidad = ventas_aggr["cantidad"] or 0
-        ventas_total = ventas_aggr["total"] or Decimal("0.00")
+        data = []
+        for row in detalles_qs:
+            data.append({
+                "producto_id": row["producto_id"],
+                "producto_nombre": row["producto__nombre"],
+                "cantidad_vendida": str(row["cantidad_vendida"] or 0),
+                "facturacion": str(row["facturacion"] or 0),
+            })
 
-        ultima_venta = (
-            ventas_qs.order_by("-fecha")
-            .values("id", "estado", "total", "fecha")
-            .first()
-        )
-        venta_dict = None
-        if ultima_venta:
-            venta_dict = {
-                "id": ultima_venta["id"],
-                "estado": ultima_venta["estado"],
-                "total": str(ultima_venta["total"] or "0.00"),
-                "hora": timezone.localtime(ultima_venta["fecha"]).strftime("%H:%M"),
-            }
-
-        # 4. Compras confirmadas hoy
-        compras_qs = Compra.objects.filter(
-            local_id=local_id,
-            estado__iexact="confirmada",
-            fecha__gte=inicio_hoy,
-            fecha__lte=fin_hoy,
-        )
-
-        compras_aggr = compras_qs.aggregate(
-            cantidad=Count("id"),
-            total=Sum("total"),
-        )
-        compras_cantidad = compras_aggr["cantidad"] or 0
-        compras_total = compras_aggr["total"] or Decimal("0.00")
-
-        ultima_compra = (
-            compras_qs.order_by("-fecha")
-            .values("id", "estado", "total", "fecha")
-            .first()
-        )
-        compra_dict = None
-        if ultima_compra:
-            compra_dict = {
-                "id": ultima_compra["id"],
-                "estado": ultima_compra["estado"],
-                "total": str(ultima_compra["total"] or "0.00"),
-                "hora": timezone.localtime(ultima_compra["fecha"]).strftime("%H:%M"),
-            }
-
-        # 5. Balance hoy
-        balance_decimal = ventas_total - compras_total
-
-        # 6. Stock bajo (<= 5 unidades)
-        stock_bajo_qs = (
-            Producto.objects.filter(local_id=local_id)
-            .values("id", "nombre", "stock_actual")
-            .order_by("stock_actual")[:10]
-        )
-
-        stock_bajo_list = []
-        for row in stock_bajo_qs:
-            stock = row.get("stock_actual") or 0
-            if stock <= 5:
-                stock_bajo_list.append(
-                    {
-                        "id": row["id"],
-                        "nombre": row["nombre"],
-                        "stock": stock,
-                    }
-                )
-
-        data = {
-            "fecha": ahora.date().isoformat(),
-            "ventas": {
-                "cantidad": str(ventas_cantidad),
-                "total": str(ventas_total),
-            },
-            "compras": {
-                "cantidad": str(compras_cantidad),
-                "total": str(compras_total),
-            },
-            "balance": str(balance_decimal),
-            "stock_bajo": stock_bajo_list,
-            "ultimos_movimientos": {
-                "venta": venta_dict,
-                "compra": compra_dict,
-            },
-        }
-
-        return Response(data, status=200)
+        return Response(data)
