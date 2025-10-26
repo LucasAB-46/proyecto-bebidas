@@ -9,6 +9,23 @@ export default function ResumenDeVenta({
   onCancelar,
   onAnularUltima,
 }) {
+  // helper: la última venta está confirmada?
+  const isConfirmada =
+    ultimaVenta &&
+    ultimaVenta.estado &&
+    ultimaVenta.estado.toLowerCase() === "confirmada";
+
+  // abre el ticket PDF en una pestaña nueva
+  const handleVerTicket = () => {
+    if (!ultimaVenta || !ultimaVenta.id) return;
+
+    const base = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+    const ventaId = ultimaVenta.id;
+    const url = `${base}/api/ventas/${ventaId}/ticket/`;
+
+    window.open(url, "_blank");
+  };
+
   return (
     <div className="card shadow-sm">
       <div className="card-body">
@@ -63,14 +80,23 @@ export default function ResumenDeVenta({
                 })}
               </p>
 
-              {ultimaVenta.estado === "CONFIRMADA" ? (
-                <button
-                  className="btn btn-warning w-100"
-                  disabled={anulando}
-                  onClick={onAnularUltima}
-                >
-                  {anulando ? "Anulando..." : "Anular Última Venta"}
-                </button>
+              {isConfirmada ? (
+                <>
+                  <button
+                    className="btn btn-warning w-100 mb-2"
+                    disabled={anulando}
+                    onClick={onAnularUltima}
+                  >
+                    {anulando ? "Anulando..." : "Anular Última Venta"}
+                  </button>
+
+                  <button
+                    className="btn btn-outline-secondary w-100"
+                    onClick={handleVerTicket}
+                  >
+                    Ver Ticket (PDF)
+                  </button>
+                </>
               ) : (
                 <button className="btn btn-secondary w-100" disabled>
                   Ya anulada
