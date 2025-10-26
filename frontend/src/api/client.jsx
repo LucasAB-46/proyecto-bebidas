@@ -1,4 +1,3 @@
-// src/api/client.jsx
 import axios from "axios";
 
 const ROOT_API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
@@ -7,12 +6,17 @@ const api = axios.create({
   baseURL: `${ROOT_API}/api`,
 });
 
-// utilidades de tokens
+// -------- auth helpers --------
 const getAccess  = () => localStorage.getItem("accessToken");
 const getRefresh = () => localStorage.getItem("refreshToken");
-const setAccess  = (t) =>
-  t ? localStorage.setItem("accessToken", t)
-    : localStorage.removeItem("accessToken");
+
+const setAccess  = (t) => {
+  if (t) {
+    localStorage.setItem("accessToken", t);
+  } else {
+    localStorage.removeItem("accessToken");
+  }
+};
 
 const clearAuth  = () => {
   localStorage.removeItem("accessToken");
@@ -20,18 +24,22 @@ const clearAuth  = () => {
   localStorage.removeItem("user");
 };
 
-// request interceptor
+// -------- request interceptor --------
 api.interceptors.request.use((config) => {
   const token = getAccess();
   if (token && !config.url.includes("/auth/token")) {
     config.headers.Authorization = `Bearer ${token}`;
   }
-  // este header lo espera tu backend, lo vi en los logs
-  config.headers["X-Local-ID"] = "1";
+
+  // MULTI-LOCAL 💥
+  // leemos qué local eligió el usuario (lo guarda LocalContext en localStorage)
+  const localId = localStorage.getItem("localActualId") || "1";
+  config.headers["X-Local-ID"] = localId;
+
   return config;
 });
 
-// cola de refresh
+// -------- refresh queue logic --------
 let refreshing = false;
 let queue = [];
 const flush = (err, token) => {
@@ -39,15 +47,17 @@ const flush = (err, token) => {
   queue = [];
 };
 
-// response interceptor
+// -------- response interceptor --------
 api.interceptors.response.use(
   (r) => r,
   async (error) => {
     const original = error.config;
     const status = error?.response?.status;
 
-    // si NO es 401, no intentamos refresh
-    if (status !== 401 || original._retry) return Promise.reject(error);
+    // si NO es 401 o ya reintentamos, soltamos el error
+    if (status !== 401 || original._retry) {
+      return Promise.reject(error);
+    }
 
     const refresh = getRefresh();
     if (!refresh) {
@@ -55,7 +65,7 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // si ya hay un refresh en progreso, esperamos
+    // si ya hay refresh en progreso, esperamos
     if (refreshing) {
       return new Promise((resolve, reject) => queue.push({ resolve, reject }))
         .then((token) => {
@@ -64,7 +74,7 @@ api.interceptors.response.use(
         });
     }
 
-    // marcamos que estamos refrescando
+    // empezamos un refresh nuevo
     original._retry = true;
     refreshing = true;
     try {
@@ -92,4 +102,3 @@ api.interceptors.response.use(
 );
 
 export default api;
-
