@@ -9,15 +9,17 @@ from .models import Venta, VentaDetalle
 from catalogo.models import Producto
 
 
-# -------- READ --------
+# ---------- READ SERIALIZERS ----------
+
 class VentaDetalleReadSerializer(serializers.ModelSerializer):
-    producto = serializers.PrimaryKeyRelatedField(read_only=True)
+    producto_nombre = serializers.CharField(source="producto.nombre", read_only=True)
 
     class Meta:
         model = VentaDetalle
         fields = (
             "renglon",
             "producto",
+            "producto_nombre",
             "cantidad",
             "precio_unitario",
             "bonif",
@@ -27,7 +29,9 @@ class VentaDetalleReadSerializer(serializers.ModelSerializer):
 
 
 class VentaReadSerializer(serializers.ModelSerializer):
-    detalles = VentaDetalleReadSerializer(many=True, read_only=True, source="ventadetalle_set")
+    detalles = VentaDetalleReadSerializer(many=True, read_only=True)
+    usuario_username = serializers.SerializerMethodField()
+    estado = serializers.CharField()  # aseguramos string plano
 
     class Meta:
         model = Venta
@@ -40,11 +44,19 @@ class VentaReadSerializer(serializers.ModelSerializer):
             "impuestos",
             "bonificaciones",
             "total",
+            "usuario_username",
             "detalles",
         )
 
+    def get_usuario_username(self, obj):
+        # no todos los registros tienen usuario obligatorio
+        if obj.usuario_id and obj.usuario:
+            return obj.usuario.username
+        return None
 
-# -------- WRITE --------
+
+# ---------- WRITE SERIALIZERS ----------
+
 class VentaDetalleWriteSerializer(serializers.Serializer):
     producto = serializers.IntegerField()
     cantidad = serializers.DecimalField(max_digits=14, decimal_places=4)
@@ -91,10 +103,13 @@ class VentaWriteSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         """
         Crea la venta en 'borrador' con sus renglones y totales.
-        La view debe llamar serializer.save(local_id=..., usuario=...)
+        self.context va a traer:
+          - "local_id"
+          - "usuario"
         """
-        local_id = validated_data.pop("local_id")
-        usuario = validated_data.pop("usuario", None)
+        local_id = self.context.get("local_id")
+        usuario = self.context.get("usuario")
+
         detalles = validated_data.pop("detalles", [])
         validated_data.setdefault("fecha", timezone.now())
 
@@ -102,7 +117,7 @@ class VentaWriteSerializer(serializers.ModelSerializer):
             local_id=local_id,
             estado="borrador",
             usuario=usuario,
-            **validated_data,
+            **validated_data
         )
 
         subtotal = Decimal("0")
@@ -110,36 +125,37 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         bonif_total = Decimal("0")
 
         for idx, d in enumerate(detalles, start=1):
+            # lock producto
             prod = (
-                Producto.objects.select_for_update()
+                Producto.objects
+                .select_for_update()
                 .only("id", "local_id", "stock_actual")
                 .get(pk=d["producto"])
             )
 
-            if prod.local_id != local_id:
-                raise serializers.ValidationError(
-                    {"producto": f"El producto {d['producto']} no pertenece al Local {local_id}."}
-                )
+            # hoy todavía NO controlamos que el producto sea del mismo local
+            # porque estamos en modo "local fijo 1"; cuando activemos multi-local
+            # vamos a validar acá.
 
             cant = d["cantidad"]
-            precio_u = d["precio_unitario"]
+            precio = d["precio_unitario"]
             bonif = d.get("bonif") or Decimal("0")
             imp = d.get("impuestos") or Decimal("0")
 
-            total_r = (cant * precio_u) - bonif + imp
+            total_r = (cant * precio) - bonif + imp
 
             VentaDetalle.objects.create(
                 venta=venta,
                 renglon=d.get("renglon") or idx,
                 producto_id=d["producto"],
                 cantidad=cant,
-                precio_unitario=precio_u,
+                precio_unitario=precio,
                 bonif=bonif,
                 impuestos=imp,
                 total_renglon=total_r,
             )
 
-            subtotal += cant * precio_u
+            subtotal += cant * precio
             imp_total += imp
             bonif_total += bonif
 
