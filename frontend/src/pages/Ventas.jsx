@@ -1,19 +1,110 @@
 import { useEffect, useState } from "react";
 import { createSale, confirmSale, annulSale } from "../services/sales.js";
 import { fetchProductos } from "../services/products.js";
-import ResumenDeVenta from "../components/ResumenDeVenta.jsx";
 
+// --- componente resumen lateral ---
+function ResumenDeVenta({
+  total,
+  loading,
+  ultimaVenta,
+  anulando,
+  onConfirmar,
+  onCancelar,
+  onAnularUltima,
+}) {
+  return (
+    <div className="card shadow-sm">
+      <div className="card-body">
+        <h3 className="card-title fw-bold mb-4">Resumen de la Venta</h3>
+
+        <div className="d-flex justify-content-between align-items-start mb-4">
+          <div className="text-uppercase fw-semibold" style={{ fontSize: "1.1rem" }}>
+            TOTAL
+          </div>
+          <div
+            className="fw-bold text-nowrap"
+            style={{ fontSize: "2rem", lineHeight: 1 }}
+          >
+            $
+            {Number(total || 0).toLocaleString("es-AR", {
+              minimumFractionDigits: 2,
+            })}
+          </div>
+        </div>
+
+        {/* Botón confirmar */}
+        <button
+          className="btn btn-primary btn-lg w-100 mb-3"
+          style={{ backgroundColor: "#4e7cf5", borderColor: "#4e7cf5" }}
+          disabled={loading || total <= 0}
+          onClick={onConfirmar}
+        >
+          {loading ? "Procesando..." : "Confirmar Venta"}
+        </button>
+
+        {/* Botón cancelar */}
+        <button
+          className="btn btn-outline-danger btn-lg w-100 mb-4"
+          disabled={loading}
+          onClick={onCancelar}
+        >
+          Cancelar
+        </button>
+
+        {/* panel última venta */}
+        <div className="border rounded p-3 bg-light">
+          {ultimaVenta ? (
+            <>
+              <p className="mb-1">
+                Última venta: #{ultimaVenta.id} – Estado:{" "}
+                <strong>{ultimaVenta.estado}</strong>
+              </p>
+              <p className="mb-3">
+                Total: $
+                {Number(ultimaVenta.total || 0).toLocaleString("es-AR", {
+                  minimumFractionDigits: 2,
+                })}
+              </p>
+
+              {ultimaVenta.estado === "CONFIRMADA" ||
+              ultimaVenta.estado === "confirmada" ? (
+                <button
+                  className="btn btn-warning w-100"
+                  disabled={anulando}
+                  onClick={onAnularUltima}
+                >
+                  {anulando ? "Anulando..." : "Anular Última Venta"}
+                </button>
+              ) : (
+                <button className="btn btn-secondary w-100" disabled>
+                  Ya anulada
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="text-muted mb-0">
+              Todavía no hay ventas confirmadas en esta sesión.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- pantalla principal ---
 export default function Ventas() {
-  // estado UI / data
+  // ---------------- state ----------------
   const [busqueda, setBusqueda] = useState("");
   const [productos, setProductos] = useState([]);
-  const [carrito, setCarrito] = useState([]); // [{id,nombre,precio,cantidad,subtotal}]
+  const [carrito, setCarrito] = useState([]); // [{id, nombre, precio, cantidad, subtotal}]
   const [loadingVenta, setLoadingVenta] = useState(false);
 
+  // para el panel de "última venta"
   const [ultimaVenta, setUltimaVenta] = useState(null); // {id, estado, total}
   const [anulando, setAnulando] = useState(false);
 
-  // cargar productos al montar
+  // ---------------- carga inicial productos ----------------
   useEffect(() => {
     fetchProductos({ search: "", page_size: 100 })
       .then((res) => {
@@ -28,11 +119,32 @@ export default function Ventas() {
       });
   }, []);
 
-  // helper: agregar producto existente al carrito
-  const agregarAlCarrito = (prod) => {
-    const precioBase = Number(prod.precio_venta ?? prod.precio ?? 0);
+  // ---------------- helpers carrito ----------------
+  // busca producto por texto (enter) y lo agrega con cantidad 1
+  const handleBuscarKeyDown = (e) => {
+    if (e.key === "Enter") {
+      const term = busqueda.trim().toLowerCase();
+      if (!term) return;
+      const prod = productos.find(
+        (p) =>
+          p.nombre.toLowerCase().includes(term) ||
+          String(p.codigo || "").toLowerCase() === term ||
+          String(p.codigo_barras || p.barcode || "")
+            .toLowerCase()
+            .includes(term)
+      );
+      if (!prod) {
+        alert("Producto no encontrado.");
+        return;
+      }
+      agregarAlCarrito(prod);
+      setBusqueda("");
+    }
+  };
 
+  const agregarAlCarrito = (prod) => {
     setCarrito((prev) => {
+      // si ya está en carrito, sumo 1
       const idx = prev.findIndex((r) => r.id === prod.id);
       if (idx !== -1) {
         const updated = [...prev];
@@ -42,68 +154,46 @@ export default function Ventas() {
         updated[idx] = row;
         return updated;
       }
+      // si no está, lo agrego
       return [
         ...prev,
         {
           id: prod.id,
           nombre: prod.nombre,
-          precio: precioBase,
+          precio: Number(prod.precio_venta ?? prod.precio ?? 0),
           cantidad: 1,
-          subtotal: precioBase,
+          subtotal: Number(prod.precio_venta ?? prod.precio ?? 0),
         },
       ];
     });
   };
 
-  // buscar con Enter
-  const handleBuscarKeyDown = (e) => {
-    if (e.key !== "Enter") return;
-    const term = busqueda.trim().toLowerCase();
-    if (!term) return;
-
-    const prod = productos.find(
-      (p) =>
-        p.nombre?.toLowerCase().includes(term) ||
-        String(p.codigo || "").toLowerCase() === term ||
-        String(p.codigo_barras || p.barcode || "")
-          .toLowerCase()
-          .includes(term)
-    );
-
-    if (!prod) {
-      alert("Producto no encontrado.");
-      return;
-    }
-
-    agregarAlCarrito(prod);
-    setBusqueda("");
-  };
-
-  // actualizar cantidad de una fila del carrito
   const actualizarCantidad = (idProd, nuevaCantidad) => {
-    setCarrito((prev) =>
-      prev.map((item) => {
-        if (item.id !== idProd) return item;
-        const cantNum = Number(nuevaCantidad);
-        const cantidadOk = cantNum > 0 && !Number.isNaN(cantNum) ? cantNum : 1;
-        return {
-          ...item,
-          cantidad: cantidadOk,
-          subtotal: cantidadOk * item.precio,
-        };
-      })
-    );
+    setCarrito((prev) => {
+      const updated = prev.map((item) => {
+        if (item.id === idProd) {
+          const cantNum = Number(nuevaCantidad);
+          return {
+            ...item,
+            cantidad: cantNum,
+            subtotal: cantNum * item.precio,
+          };
+        }
+        return item;
+      });
+      return updated;
+    });
   };
 
-  // quitar un producto del carrito
   const quitarDelCarrito = (idProd) => {
     setCarrito((prev) => prev.filter((item) => item.id !== idProd));
   };
 
-  // total venta
   const totalVenta = carrito.reduce((acc, it) => acc + it.subtotal, 0);
 
-  // flujo de confirmar venta
+  // ---------------- flujo venta ----------------
+  // 1. crea la venta borrador en /ventas/
+  // 2. confirma en /ventas/{id}/confirmar/
   const confirmarVentaHandler = async () => {
     if (!carrito.length) {
       alert("Agregá productos antes de confirmar.");
@@ -112,7 +202,8 @@ export default function Ventas() {
 
     setLoadingVenta(true);
     try {
-      // payload para backend VentaWriteSerializer
+      // armo payload tal como lo espera el backend
+      // detalles: [{producto, cantidad, precio_unitario}]
       const payload = {
         fecha: new Date().toISOString(),
         detalles: carrito.map((item, idx) => ({
@@ -120,27 +211,26 @@ export default function Ventas() {
           cantidad: item.cantidad,
           precio_unitario: item.precio,
           renglon: idx + 1,
-          bonif: 0,
-          impuestos: 0,
         })),
       };
 
-      // 1) crear venta borrador
+      // 1) creo
       const crearResp = await createSale(payload);
-      const ventaCreada = crearResp.data;
+      const ventaCreada = crearResp.data; // {id, estado, total, ...}
       const ventaId = ventaCreada.id;
 
-      // 2) confirmar venta
+      // 2) confirmo
       const confirmarResp = await confirmSale(ventaId);
       const ventaConfirmada = confirmarResp.data;
 
+      // guardo como últimaVenta para el panel resumen
       setUltimaVenta({
         id: ventaConfirmada.id,
         estado: ventaConfirmada.estado,
         total: ventaConfirmada.total,
       });
 
-      // limpiar carrito
+      // limpio carrito
       setCarrito([]);
 
       alert("¡Venta confirmada con éxito!");
@@ -152,19 +242,14 @@ export default function Ventas() {
         "No se pudo confirmar la venta.";
       alert(msg);
     } finally {
-      setLoadingVenta(false);
+        setLoadingVenta(false);
     }
   };
 
-  // anular última venta
+  // anular última venta confirmada
   const anularUltimaVenta = async () => {
     if (!ultimaVenta || !ultimaVenta.id) return;
-    if (
-      !window.confirm(
-        "¿Seguro que querés anular la última venta? Esto va a devolver stock."
-      )
-    )
-      return;
+    if (!window.confirm("¿Seguro que querés anular la última venta?")) return;
 
     setAnulando(true);
     try {
@@ -176,17 +261,17 @@ export default function Ventas() {
         total: ventaAnulada.total,
       });
     } catch (err) {
-      console.error("Error anulando venta", err);
+      console.error("Error anulando", err);
       alert(
         err.response?.data?.detail ||
-          "No se pudo anular la venta (puede que ya esté anulada)"
+          "No se pudo anular la venta (puede que ya esté ANULADA)"
       );
     } finally {
       setAnulando(false);
     }
   };
 
-  // render
+  // ---------------- render ----------------
   return (
     <div className="container mt-4">
       <h1 className="mb-4">Punto de Venta</h1>
@@ -202,13 +287,13 @@ export default function Ventas() {
           onKeyDown={handleBuscarKeyDown}
         />
         <div className="form-text">
-          Escribí parte del nombre, código interno o código de barras y presioná
-          Enter para agregar.
+          Escribí parte del nombre o el código y presioná Enter para agregar.
         </div>
       </div>
 
+      {/* CARRITO + RESUMEN */}
       <div className="row">
-        {/* TABLA CARRITO */}
+        {/* tabla carrito */}
         <div className="col-12 col-lg-8 mb-4">
           <h2>Carrito</h2>
           <div className="table-responsive border rounded">
@@ -245,14 +330,12 @@ export default function Ventas() {
                         />
                       </td>
                       <td style={{ whiteSpace: "nowrap" }}>
-                        $
-                        {item.precio.toLocaleString("es-AR", {
+                        ${item.precio.toLocaleString("es-AR", {
                           minimumFractionDigits: 2,
                         })}
                       </td>
                       <td style={{ whiteSpace: "nowrap" }}>
-                        $
-                        {item.subtotal.toLocaleString("es-AR", {
+                        ${item.subtotal.toLocaleString("es-AR", {
                           minimumFractionDigits: 2,
                         })}
                       </td>
@@ -272,7 +355,7 @@ export default function Ventas() {
           </div>
         </div>
 
-        {/* PANEL RESUMEN DERECHA */}
+        {/* panel resumen derecha */}
         <div className="col-12 col-lg-4">
           <ResumenDeVenta
             total={totalVenta}
