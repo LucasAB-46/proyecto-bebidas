@@ -19,7 +19,7 @@ class VentaViewSet(viewsets.ModelViewSet):
     /api/ventas/{id}/           -> retrieve
     /api/ventas/{id}/confirmar/ -> POST confirmar
     /api/ventas/{id}/anular/    -> POST anular
-    /api/ventas/historial/      -> GET con filtros fecha/estado (para dashboard)
+    /api/ventas/historial/      -> GET con filtros (dashboard)
     """
     queryset = (
         Venta.objects
@@ -37,17 +37,19 @@ class VentaViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         """
-        override create() para inyectar context correcto y no romper
+        Creamos la venta en borrador usando el serializer con context.
+        Si algo está mal en datos → 400, no 500.
         """
         serializer = self.get_serializer(
             data=request.data,
             context={
-                "local_id": 1,              # TODO: tomar de header X-Local-ID
-                "usuario": request.user,    # puede ser None si anon, pero en prod usamos auth
+                "local_id": 1,            # TODO: header X-Local-ID
+                "usuario": request.user,  # request.user existe x IsAuthenticated
             },
         )
         serializer.is_valid(raise_exception=True)
-        venta = serializer.save()
+
+        venta = serializer.save()  # llama al create() del serializer
         read_data = VentaReadSerializer(venta).data
         return Response(read_data, status=status.HTTP_201_CREATED)
 

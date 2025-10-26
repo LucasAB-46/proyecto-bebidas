@@ -31,7 +31,7 @@ class VentaDetalleReadSerializer(serializers.ModelSerializer):
 class VentaReadSerializer(serializers.ModelSerializer):
     detalles = VentaDetalleReadSerializer(many=True, read_only=True)
     usuario_username = serializers.SerializerMethodField()
-    estado = serializers.CharField()  # aseguramos string plano
+    estado = serializers.CharField()
 
     class Meta:
         model = Venta
@@ -49,8 +49,8 @@ class VentaReadSerializer(serializers.ModelSerializer):
         )
 
     def get_usuario_username(self, obj):
-        # no todos los registros tienen usuario obligatorio
-        if obj.usuario_id and obj.usuario:
+        # usuario puede ser null
+        if getattr(obj, "usuario", None):
             return obj.usuario.username
         return None
 
@@ -95,67 +95,76 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         read_only_fields = ("subtotal", "impuestos", "bonificaciones", "total")
 
     def validate_detalles(self, value: List[dict]):
-        if not value:
+        if not value or len(value) == 0:
             raise serializers.ValidationError("Debe informar al menos un renglón.")
         return value
 
     @transaction.atomic
     def create(self, validated_data):
         """
-        Crea la venta en 'borrador' con sus renglones y totales.
-        self.context va a traer:
-          - "local_id"
-          - "usuario"
+        Crea venta en estado 'borrador', calcula totales y genera renglones.
+        Usa self.context["local_id"] y self.context["usuario"].
+        Esta función NO descuenta stock todavía.
         """
         local_id = self.context.get("local_id")
         usuario = self.context.get("usuario")
 
-        detalles = validated_data.pop("detalles", [])
-        validated_data.setdefault("fecha", timezone.now())
+        if not local_id:
+            raise serializers.ValidationError(
+                {"local": "Falta local_id en el contexto del serializer."}
+            )
 
+        detalles_payload = validated_data.pop("detalles", [])
+        # fecha opcional → default ahora
+        fecha = validated_data.pop("fecha", None) or timezone.now()
+
+        # creamos venta base
         venta = Venta.objects.create(
             local_id=local_id,
+            usuario=usuario if getattr(usuario, "id", None) else None,
+            fecha=fecha,
             estado="borrador",
-            usuario=usuario,
-            **validated_data
+            subtotal=Decimal("0"),
+            impuestos=Decimal("0"),
+            bonificaciones=Decimal("0"),
+            total=Decimal("0"),
         )
 
         subtotal = Decimal("0")
         imp_total = Decimal("0")
         bonif_total = Decimal("0")
 
-        for idx, d in enumerate(detalles, start=1):
+        # iterar detalles
+        for idx, d in enumerate(detalles_payload, start=1):
+            prod_id = d["producto"]
+
             # lock producto
             prod = (
                 Producto.objects
                 .select_for_update()
-                .only("id", "local_id", "stock_actual")
-                .get(pk=d["producto"])
+                .only("id", "stock_actual", "local_id")
+                .get(pk=prod_id)
             )
 
-            # hoy todavía NO controlamos que el producto sea del mismo local
-            # porque estamos en modo "local fijo 1"; cuando activemos multi-local
-            # vamos a validar acá.
+            cantidad = Decimal(d["cantidad"])
+            precio_u = Decimal(d["precio_unitario"])
+            bonif = Decimal(d.get("bonif") or "0")
+            imp = Decimal(d.get("impuestos") or "0")
 
-            cant = d["cantidad"]
-            precio = d["precio_unitario"]
-            bonif = d.get("bonif") or Decimal("0")
-            imp = d.get("impuestos") or Decimal("0")
-
-            total_r = (cant * precio) - bonif + imp
+            total_r = (cantidad * precio_u) - bonif + imp
 
             VentaDetalle.objects.create(
                 venta=venta,
                 renglon=d.get("renglon") or idx,
-                producto_id=d["producto"],
-                cantidad=cant,
-                precio_unitario=precio,
+                producto_id=prod.id,
+                cantidad=cantidad,
+                precio_unitario=precio_u,
                 bonif=bonif,
                 impuestos=imp,
                 total_renglon=total_r,
             )
 
-            subtotal += cant * precio
+            subtotal += cantidad * precio_u
             imp_total += imp
             bonif_total += bonif
 
@@ -163,6 +172,14 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         venta.impuestos = imp_total
         venta.bonificaciones = bonif_total
         venta.total = subtotal - bonif_total + imp_total
-        venta.save(update_fields=["subtotal", "impuestos", "bonificaciones", "total"])
+        venta.save(
+            update_fields=[
+                "subtotal",
+                "impuestos",
+                "bonificaciones",
+                "total",
+                "updated_at",
+            ]
+        )
 
         return venta
