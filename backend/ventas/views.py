@@ -48,13 +48,22 @@ class VentaViewSet(viewsets.ModelViewSet):
             return VentaWriteSerializer
         return VentaReadSerializer
 
-    def perform_create(self, serializer):
+        def perform_create(self, serializer):
         """
-        Creamos la venta en estado 'borrador' con sus detalles y totales.
-        Por ahora local_id=1 hasta que el FE mande X-Local-ID real.
+        Crea la venta en estado 'borrador' con sus detalles.
+        local_id ahora viene del header X-Local-ID (multi-sucursal). Fallback = 1.
         """
-        local_id = 1
-        return serializer.save(local_id=local_id, usuario=self.request.user)
+        raw_local = self.request.META.get("HTTP_X_LOCAL_ID")
+        try:
+            local_id = int(raw_local)
+        except (TypeError, ValueError):
+            local_id = 1  # fallback seguro
+
+        serializer.save(
+            local_id=local_id,
+            usuario=self.request.user
+        )
+
 
     # --------- ACCIÓN: confirmar venta ----------
     @action(detail=True, methods=["post"])

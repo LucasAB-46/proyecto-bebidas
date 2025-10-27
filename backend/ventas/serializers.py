@@ -9,17 +9,18 @@ from .models import Venta, VentaDetalle
 from catalogo.models import Producto
 
 
-# ---------- READ SERIALIZERS ----------
+# -----------------------
+# SERIALIZADORES READ
+# -----------------------
 
 class VentaDetalleReadSerializer(serializers.ModelSerializer):
-    producto_nombre = serializers.CharField(source="producto.nombre", read_only=True)
+    producto = serializers.PrimaryKeyRelatedField(read_only=True)
 
     class Meta:
         model = VentaDetalle
         fields = (
             "renglon",
             "producto",
-            "producto_nombre",
             "cantidad",
             "precio_unitario",
             "bonif",
@@ -29,9 +30,9 @@ class VentaDetalleReadSerializer(serializers.ModelSerializer):
 
 
 class VentaReadSerializer(serializers.ModelSerializer):
-    detalles = VentaDetalleReadSerializer(many=True, read_only=True)
-    usuario_username = serializers.SerializerMethodField()
-    estado = serializers.CharField()
+    # usuario puede ser null
+    usuario = serializers.SerializerMethodField()
+    detalles = VentaDetalleReadSerializer(many=True, read_only=True, source="detalles")
 
     class Meta:
         model = Venta
@@ -44,18 +45,19 @@ class VentaReadSerializer(serializers.ModelSerializer):
             "impuestos",
             "bonificaciones",
             "total",
-            "usuario_username",
+            "usuario",
             "detalles",
         )
 
-    def get_usuario_username(self, obj):
-        # usuario puede ser null
-        if getattr(obj, "usuario", None):
+    def get_usuario(self, obj):
+        if obj.usuario:
             return obj.usuario.username
         return None
 
 
-# ---------- WRITE SERIALIZERS ----------
+# -----------------------
+# SERIALIZADORES WRITE
+# -----------------------
 
 class VentaDetalleWriteSerializer(serializers.Serializer):
     producto = serializers.IntegerField()
@@ -66,18 +68,43 @@ class VentaDetalleWriteSerializer(serializers.Serializer):
     impuestos = serializers.DecimalField(max_digits=14, decimal_places=4, required=False)
 
     def validate(self, data):
+        # cantidad > 0
         if data["cantidad"] <= 0:
             raise serializers.ValidationError({"cantidad": "Debe ser mayor a 0."})
+        # precio_unitario >= 0
         if data["precio_unitario"] < 0:
             raise serializers.ValidationError({"precio_unitario": "No puede ser negativo."})
+        # bonif >= 0
         if data.get("bonif") is not None and data["bonif"] < 0:
             raise serializers.ValidationError({"bonif": "No puede ser negativo."})
+        # impuestos >= 0
         if data.get("impuestos") is not None and data["impuestos"] < 0:
             raise serializers.ValidationError({"impuestos": "No puede ser negativo."})
         return data
 
 
 class VentaWriteSerializer(serializers.ModelSerializer):
+    """
+    Este serializer se usa para CREAR / EDITAR ventas en estado 'borrador'.
+    El frontend manda:
+    {
+        "fecha": "...iso...",
+        "detalles": [
+            {
+                "producto": <id>,
+                "cantidad": <num>,
+                "precio_unitario": <num>,
+                "renglon": <n?>,
+                "bonif": <num?>,
+                "impuestos": <num?>
+            },
+            ...
+        ]
+    }
+
+    No hace falta que mande subtotal/total/etc. Eso lo calculamos acá.
+    """
+
     fecha = serializers.DateTimeField(required=False)
     detalles = VentaDetalleWriteSerializer(many=True, write_only=True)
 
@@ -87,6 +114,7 @@ class VentaWriteSerializer(serializers.ModelSerializer):
             "id",
             "fecha",
             "detalles",
+            # totales NO se escriben desde el front, los generamos
             "subtotal",
             "impuestos",
             "bonificaciones",
@@ -95,76 +123,63 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         read_only_fields = ("subtotal", "impuestos", "bonificaciones", "total")
 
     def validate_detalles(self, value: List[dict]):
-        if not value or len(value) == 0:
+        if not value:
             raise serializers.ValidationError("Debe informar al menos un renglón.")
         return value
 
     @transaction.atomic
     def create(self, validated_data):
         """
-        Crea venta en estado 'borrador', calcula totales y genera renglones.
-        Usa self.context["local_id"] y self.context["usuario"].
-        Esta función NO descuenta stock todavía.
+        Crea la Venta en 'borrador' con detalles y totales calculados.
+        La ViewSet llama serializer.save(local_id=?, usuario=?)
         """
-        local_id = self.context.get("local_id")
-        usuario = self.context.get("usuario")
+        # campos extra que viene del perform_create()
+        local_id = validated_data.pop("local_id")
+        usuario = validated_data.pop("usuario", None)
 
-        if not local_id:
-            raise serializers.ValidationError(
-                {"local": "Falta local_id en el contexto del serializer."}
-            )
+        detalles_data = validated_data.pop("detalles", [])
+        validated_data.setdefault("fecha", timezone.now())
 
-        detalles_payload = validated_data.pop("detalles", [])
-        # fecha opcional → default ahora
-        fecha = validated_data.pop("fecha", None) or timezone.now()
-
-        # creamos venta base
+        # creamos venta en estado borrador
         venta = Venta.objects.create(
             local_id=local_id,
-            usuario=usuario if getattr(usuario, "id", None) else None,
-            fecha=fecha,
             estado="borrador",
-            subtotal=Decimal("0"),
-            impuestos=Decimal("0"),
-            bonificaciones=Decimal("0"),
-            total=Decimal("0"),
+            usuario=usuario,
+            **validated_data,
         )
 
         subtotal = Decimal("0")
         imp_total = Decimal("0")
         bonif_total = Decimal("0")
 
-        # iterar detalles
-        for idx, d in enumerate(detalles_payload, start=1):
-            prod_id = d["producto"]
-
-            # lock producto
+        for idx, d in enumerate(detalles_data, start=1):
+            # lock + chequeo que el producto pertenezca al local correcto en el futuro
             prod = (
                 Producto.objects
                 .select_for_update()
-                .only("id", "stock_actual", "local_id")
-                .get(pk=prod_id)
+                .only("id")
+                .get(pk=d["producto"])
             )
 
-            cantidad = Decimal(d["cantidad"])
-            precio_u = Decimal(d["precio_unitario"])
-            bonif = Decimal(d.get("bonif") or "0")
-            imp = Decimal(d.get("impuestos") or "0")
+            cant = d["cantidad"]
+            precio = d["precio_unitario"]
+            bonif = d.get("bonif") or Decimal("0")
+            imp = d.get("impuestos") or Decimal("0")
 
-            total_r = (cantidad * precio_u) - bonif + imp
+            total_r = (cant * precio) - bonif + imp
 
             VentaDetalle.objects.create(
                 venta=venta,
                 renglon=d.get("renglon") or idx,
                 producto_id=prod.id,
-                cantidad=cantidad,
-                precio_unitario=precio_u,
+                cantidad=cant,
+                precio_unitario=precio,
                 bonif=bonif,
                 impuestos=imp,
                 total_renglon=total_r,
             )
 
-            subtotal += cantidad * precio_u
+            subtotal += cant * precio
             imp_total += imp
             bonif_total += bonif
 
@@ -172,14 +187,70 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         venta.impuestos = imp_total
         venta.bonificaciones = bonif_total
         venta.total = subtotal - bonif_total + imp_total
-        venta.save(
-            update_fields=[
-                "subtotal",
-                "impuestos",
-                "bonificaciones",
-                "total",
-                "updated_at",
-            ]
-        )
+        venta.save(update_fields=["subtotal", "impuestos", "bonificaciones", "total"])
 
         return venta
+
+    @transaction.atomic
+    def update(self, instance: Venta, validated_data):
+        """
+        Si en algún momento editamos una venta borrador desde el front.
+        Por ahora el front no usa PUT/PATCH, pero lo dejamos prolijo.
+        """
+        local_id = validated_data.pop("local_id")
+        usuario = validated_data.pop("usuario", None)
+        detalles_data = validated_data.pop("detalles", None)
+
+        # actualizamos campos simples (ej: fecha)
+        for attr, val in validated_data.items():
+            setattr(instance, attr, val)
+
+        # si mandaron nuevos detalles, reemplazamos todos
+        if detalles_data is not None:
+            instance.detalles.all().delete()
+
+            subtotal = Decimal("0")
+            imp_total = Decimal("0")
+            bonif_total = Decimal("0")
+
+            for idx, d in enumerate(detalles_data, start=1):
+                prod = (
+                    Producto.objects
+                    .select_for_update()
+                    .only("id")
+                    .get(pk=d["producto"])
+                )
+
+                cant = d["cantidad"]
+                precio = d["precio_unitario"]
+                bonif = d.get("bonif") or Decimal("0")
+                imp = d.get("impuestos") or Decimal("0")
+
+                total_r = (cant * precio) - bonif + imp
+
+                VentaDetalle.objects.create(
+                    venta=instance,
+                    renglon=d.get("renglon") or idx,
+                    producto_id=prod.id,
+                    cantidad=cant,
+                    precio_unitario=precio,
+                    bonif=bonif,
+                    impuestos=imp,
+                    total_renglon=total_r,
+                )
+
+                subtotal += cant * precio
+                imp_total += imp
+                bonif_total += bonif
+
+            instance.subtotal = subtotal
+            instance.impuestos = imp_total
+            instance.bonificaciones = bonif_total
+            instance.total = subtotal - bonif_total + imp_total
+
+        # guardamos
+        if usuario and not instance.usuario_id:
+            instance.usuario = usuario
+
+        instance.save()
+        return instance
