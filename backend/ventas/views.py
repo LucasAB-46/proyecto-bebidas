@@ -1,15 +1,19 @@
 from decimal import Decimal
 from io import BytesIO
+import base64
+import qrcode
+
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date
-
-from django.http import HttpResponse
 
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 from .models import Venta, VentaDetalle
 from .serializers import (
@@ -18,12 +22,6 @@ from .serializers import (
 )
 from catalogo.models import Producto
 
-# libs para PDF + QR
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-import qrcode
-from PIL import Image
-
 
 class VentaViewSet(viewsets.ModelViewSet):
     """
@@ -31,8 +29,8 @@ class VentaViewSet(viewsets.ModelViewSet):
     /api/ventas/{id}/           -> retrieve
     /api/ventas/{id}/confirmar/ -> POST confirmar
     /api/ventas/{id}/anular/    -> POST anular
-    /api/ventas/{id}/ticket/    -> GET  PDF ticket con QR
-    /api/ventas/historial/      -> GET con filtros fecha/estado (para dashboard)
+    /api/ventas/{id}/ticket/    -> GET ticket PDF base64 (+ QR)
+    /api/ventas/historial/      -> GET filtro fecha/estado (dashboard)
     """
     queryset = (
         Venta.objects
@@ -48,10 +46,10 @@ class VentaViewSet(viewsets.ModelViewSet):
             return VentaWriteSerializer
         return VentaReadSerializer
 
-        def perform_create(self, serializer):
+    def perform_create(self, serializer):
         """
         Crea la venta en estado 'borrador' con sus detalles.
-        local_id ahora viene del header X-Local-ID (multi-sucursal). Fallback = 1.
+        local_id viene del header X-Local-ID (multi-sucursal). Fallback = 1.
         """
         raw_local = self.request.META.get("HTTP_X_LOCAL_ID")
         try:
@@ -61,9 +59,8 @@ class VentaViewSet(viewsets.ModelViewSet):
 
         serializer.save(
             local_id=local_id,
-            usuario=self.request.user
+            usuario=self.request.user,
         )
-
 
     # --------- ACCIÓN: confirmar venta ----------
     @action(detail=True, methods=["post"])
@@ -91,14 +88,13 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # control stock disponible
+        # control stock antes de descontar
         for det in venta.detalles.all():
             prod = (
                 Producto.objects
                 .select_for_update()
                 .get(pk=det.producto_id)
             )
-
             if prod.stock_actual < det.cantidad:
                 return Response(
                     {
@@ -178,6 +174,7 @@ class VentaViewSet(viewsets.ModelViewSet):
     def historial(self, request):
         """
         /api/ventas/historial/?desde=2025-10-26&hasta=2025-10-26&estado=todos
+
         Devuelve ventas en ese rango de fechas (inclusive),
         opcionalmente filtrando por estado.
         """
@@ -189,7 +186,7 @@ class VentaViewSet(viewsets.ModelViewSet):
         desde = parse_date(desde_str) or hoy
         hasta = parse_date(hasta_str) or hoy
 
-        # cubrir todo el día 'hasta'
+        # datetimes con todo el día
         desde_dt = timezone.make_aware(
             timezone.datetime.combine(
                 desde, timezone.datetime.min.time()
@@ -213,16 +210,18 @@ class VentaViewSet(viewsets.ModelViewSet):
         data = VentaReadSerializer(qs, many=True).data
         return Response(data, status=status.HTTP_200_OK)
 
-    # --------- ACCIÓN: ticket PDF con QR ----------
+    # --------- ACCIÓN: ticket con QR ----------
     @action(detail=True, methods=["get"])
     def ticket(self, request, pk=None):
         """
-        GET /api/ventas/{id}/ticket/
-        Devuelve un PDF (boleta simple) con:
-        - Datos de la venta
-        - Detalle de ítems
-        - Total final
-        - Código QR con la URL pública o el ID de la venta
+        Devuelve el ticket de la venta en PDF (base64) y además
+        un PNG QR (base64) separado por conveniencia del FE.
+
+        Respuesta:
+        {
+          "pdf_base64": "...",
+          "qr_base64": "..."
+        }
         """
         try:
             venta = (
@@ -236,107 +235,66 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # armamos info base para el QR
-        # Más adelante esto puede ser una URL pública tipo:
-        # https://tu-dominio.com/ticket/VENTA_ID
-        qr_text = f"VENTA {venta.id} | TOTAL ${venta.total} | ESTADO {venta.estado}"
-
-        # generamos la imagen QR en memoria
-        qr_img = qrcode.make(qr_text)
+        # armamos el texto del QR
+        qr_payload = f"VENTA:{venta.id}|TOTAL:{venta.total}|ESTADO:{venta.estado}"
+        qr_img = qrcode.make(qr_payload)
         qr_buffer = BytesIO()
         qr_img.save(qr_buffer, format="PNG")
-        qr_buffer.seek(0)
-        qr_pil = Image.open(qr_buffer)
+        qr_bytes = qr_buffer.getvalue()
+        qr_b64 = base64.b64encode(qr_bytes).decode("utf-8")
 
-        # generamos el PDF en memoria
+        # armamos el PDF
         pdf_buffer = BytesIO()
-        p = canvas.Canvas(pdf_buffer, pagesize=A4)
+        c = canvas.Canvas(pdf_buffer, pagesize=letter)
 
-        # coordenadas base
-        width, height = A4
-        x_left = 40
-        y_top = height - 40
+        y = 750
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, f"Venta #{venta.id} - Estado: {venta.estado.upper()}")
+        y -= 20
+        c.setFont("Helvetica", 10)
+        c.drawString(50, y, f"Fecha: {venta.fecha.strftime('%Y-%m-%d %H:%M')}")
+        y -= 30
 
-        # Encabezado
-        p.setFont("Helvetica-Bold", 14)
-        p.drawString(x_left, y_top, "Comprobante de Venta")
-        p.setFont("Helvetica", 10)
-        p.drawString(x_left, y_top - 15, f"Venta #{venta.id}")
-        p.drawString(x_left, y_top - 30, f"Fecha: {venta.fecha.astimezone(timezone.get_current_timezone()).strftime('%d/%m/%Y %H:%M')}")
-        p.drawString(x_left, y_top - 45, f"Estado: {venta.estado.upper()}")
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(50, y, "Item")
+        c.drawString(200, y, "Cant")
+        c.drawString(250, y, "P.Unit")
+        c.drawString(320, y, "Total")
+        y -= 15
+        c.line(50, y, 400, y)
+        y -= 15
 
-        # Datos del local (por ahora local_id fijo)
-        if venta.local:
-            p.drawString(x_left, y_top - 60, f"Sucursal: {venta.local.nombre} (ID {venta.local_id})")
-        else:
-            p.drawString(x_left, y_top - 60, f"Sucursal: #{venta.local_id}")
-
-        # Usuario que cargó la venta (si existe)
-        if venta.usuario:
-            p.drawString(x_left, y_top - 75, f"Operador: {venta.usuario.username}")
-
-        # Tabla de ítems
-        y_cursor = y_top - 110
-        p.setFont("Helvetica-Bold", 10)
-        p.drawString(x_left, y_cursor, "Producto")
-        p.drawString(x_left + 200, y_cursor, "Cant.")
-        p.drawString(x_left + 250, y_cursor, "P.Unit")
-        p.drawString(x_left + 310, y_cursor, "Subtot.")
-        p.setFont("Helvetica", 10)
-
-        y_cursor -= 15
+        c.setFont("Helvetica", 10)
         for det in venta.detalles.all():
-            nombre_prod = det.producto.nombre if det.producto else f"ID {det.producto_id}"
-            p.drawString(x_left, y_cursor, nombre_prod[:28])
-            p.drawRightString(x_left + 230, y_cursor, f"{det.cantidad}")
-            p.drawRightString(x_left + 300, y_cursor, f"${det.precio_unitario}")
-            p.drawRightString(x_left + 360, y_cursor, f"${det.total_renglon}")
-            y_cursor -= 12
+            nombre = det.producto.nombre if det.producto else "Producto"
+            c.drawString(50, y, nombre[:18])
+            c.drawString(200, y, str(det.cantidad))
+            c.drawString(250, y, f"${det.precio_unitario}")
+            c.drawString(320, y, f"${det.total_renglon}")
+            y -= 15
+            if y < 100:
+                c.showPage()
+                y = 750
 
-            # salto de página simple si nos quedamos sin lugar
-            if y_cursor < 120:
-                p.showPage()
-                y_cursor = height - 60
-                p.setFont("Helvetica", 10)
+        y -= 20
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(50, y, f"TOTAL: ${venta.total}")
+        y -= 40
 
-        # Totales
-        y_cursor -= 20
-        p.setFont("Helvetica-Bold", 11)
-        p.drawRightString(x_left + 360, y_cursor, f"Subtotal: ${venta.subtotal}")
-        y_cursor -= 14
-        p.drawRightString(x_left + 360, y_cursor, f"Impuestos: ${venta.impuestos}")
-        y_cursor -= 14
-        p.drawRightString(x_left + 360, y_cursor, f"Bonif: ${venta.bonificaciones}")
-        y_cursor -= 14
-        p.setFont("Helvetica-Bold", 13)
-        p.drawRightString(x_left + 360, y_cursor, f"TOTAL: ${venta.total}")
+        # pegamos el QR en el PDF
+        qr_tmp = BytesIO(qr_bytes)
+        c.drawInlineImage(qr_tmp, 50, y, width=100, height=100)
 
-        # QR abajo a la izquierda
-        # pasamos la imagen PIL al canvas de reportlab
-        y_qr = 80
-        x_qr = x_left
-        qr_size = 100
+        c.showPage()
+        c.save()
 
-        qr_tmp = BytesIO()
-        qr_pil.save(qr_tmp, format="PNG")
-        qr_tmp.seek(0)
+        pdf_bytes = pdf_buffer.getvalue()
+        pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
-        p.drawInlineImage(qr_tmp, x_qr, y_qr, width=qr_size, height=qr_size)
-        p.setFont("Helvetica", 8)
-        p.drawString(x_qr, y_qr - 12, "Escanear para verificar venta")
-
-        # cerrar PDF
-        p.showPage()
-        p.save()
-
-        pdf_buffer.seek(0)
-
-        filename = f"venta_{venta.id}.pdf"
-
-        return HttpResponse(
-            pdf_buffer.getvalue(),
-            content_type="application/pdf",
-            headers={
-                "Content-Disposition": f'inline; filename="{filename}"'
+        return Response(
+            {
+                "pdf_base64": pdf_b64,
+                "qr_base64": qr_b64,
             },
+            status=status.HTTP_200_OK,
         )
