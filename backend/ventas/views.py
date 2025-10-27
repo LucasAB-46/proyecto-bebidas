@@ -1,7 +1,9 @@
 from decimal import Decimal
+from io import BytesIO
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+
 from django.http import HttpResponse
 
 from rest_framework import status, viewsets
@@ -16,8 +18,11 @@ from .serializers import (
 )
 from catalogo.models import Producto
 
-# 👇 nuevo import
-from .utils.pdf import build_ticket_pdf
+# libs para PDF + QR
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+import qrcode
+from PIL import Image
 
 
 class VentaViewSet(viewsets.ModelViewSet):
@@ -26,7 +31,7 @@ class VentaViewSet(viewsets.ModelViewSet):
     /api/ventas/{id}/           -> retrieve
     /api/ventas/{id}/confirmar/ -> POST confirmar
     /api/ventas/{id}/anular/    -> POST anular
-    /api/ventas/{id}/ticket/    -> GET  PDF boleta
+    /api/ventas/{id}/ticket/    -> GET  PDF ticket con QR
     /api/ventas/historial/      -> GET con filtros fecha/estado (para dashboard)
     """
     queryset = (
@@ -46,11 +51,8 @@ class VentaViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """
         Creamos la venta en estado 'borrador' con sus detalles y totales.
-        Le pasamos local_id fijo=1 hasta que soportemos multi-local en el FE.
+        Por ahora local_id=1 hasta que el FE mande X-Local-ID real.
         """
-        # FUTURO MULTILOCAL:
-        #   local_id = request.META.get("HTTP_X_LOCAL_ID")
-        #   si no viene => 1 por ahora
         local_id = 1
         return serializer.save(local_id=local_id, usuario=self.request.user)
 
@@ -80,13 +82,14 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # control stock
+        # control stock disponible
         for det in venta.detalles.all():
             prod = (
                 Producto.objects
                 .select_for_update()
                 .get(pk=det.producto_id)
             )
+
             if prod.stock_actual < det.cantidad:
                 return Response(
                     {
@@ -98,7 +101,7 @@ class VentaViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # descuento stock
+        # descontar stock
         for det in venta.detalles.all():
             prod = (
                 Producto.objects
@@ -177,7 +180,7 @@ class VentaViewSet(viewsets.ModelViewSet):
         desde = parse_date(desde_str) or hoy
         hasta = parse_date(hasta_str) or hoy
 
-        # datetimes aware cubriendo todo el día
+        # cubrir todo el día 'hasta'
         desde_dt = timezone.make_aware(
             timezone.datetime.combine(
                 desde, timezone.datetime.min.time()
@@ -201,17 +204,20 @@ class VentaViewSet(viewsets.ModelViewSet):
         data = VentaReadSerializer(qs, many=True).data
         return Response(data, status=status.HTTP_200_OK)
 
-    # --------- ACCIÓN: ticket (PDF) ----------
+    # --------- ACCIÓN: ticket PDF con QR ----------
     @action(detail=True, methods=["get"])
     def ticket(self, request, pk=None):
         """
         GET /api/ventas/{id}/ticket/
-        Devuelve un PDF con la boleta/ticket, incluyendo QR.
+        Devuelve un PDF (boleta simple) con:
+        - Datos de la venta
+        - Detalle de ítems
+        - Total final
+        - Código QR con la URL pública o el ID de la venta
         """
         try:
             venta = (
                 Venta.objects
-                .select_related("local")
                 .prefetch_related("detalles", "detalles__producto")
                 .get(pk=pk)
             )
@@ -221,11 +227,107 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # generamos PDF en memoria
-        pdf_bytes = build_ticket_pdf(venta, local=venta.local if hasattr(venta, "local") else None)
+        # armamos info base para el QR
+        # Más adelante esto puede ser una URL pública tipo:
+        # https://tu-dominio.com/ticket/VENTA_ID
+        qr_text = f"VENTA {venta.id} | TOTAL ${venta.total} | ESTADO {venta.estado}"
 
-        # devolvemos como attachment
-        filename = f"ticket_venta_{venta.id}.pdf"
-        resp = HttpResponse(pdf_bytes, content_type="application/pdf")
-        resp["Content-Disposition"] = f'inline; filename="{filename}"'
-        return resp
+        # generamos la imagen QR en memoria
+        qr_img = qrcode.make(qr_text)
+        qr_buffer = BytesIO()
+        qr_img.save(qr_buffer, format="PNG")
+        qr_buffer.seek(0)
+        qr_pil = Image.open(qr_buffer)
+
+        # generamos el PDF en memoria
+        pdf_buffer = BytesIO()
+        p = canvas.Canvas(pdf_buffer, pagesize=A4)
+
+        # coordenadas base
+        width, height = A4
+        x_left = 40
+        y_top = height - 40
+
+        # Encabezado
+        p.setFont("Helvetica-Bold", 14)
+        p.drawString(x_left, y_top, "Comprobante de Venta")
+        p.setFont("Helvetica", 10)
+        p.drawString(x_left, y_top - 15, f"Venta #{venta.id}")
+        p.drawString(x_left, y_top - 30, f"Fecha: {venta.fecha.astimezone(timezone.get_current_timezone()).strftime('%d/%m/%Y %H:%M')}")
+        p.drawString(x_left, y_top - 45, f"Estado: {venta.estado.upper()}")
+
+        # Datos del local (por ahora local_id fijo)
+        if venta.local:
+            p.drawString(x_left, y_top - 60, f"Sucursal: {venta.local.nombre} (ID {venta.local_id})")
+        else:
+            p.drawString(x_left, y_top - 60, f"Sucursal: #{venta.local_id}")
+
+        # Usuario que cargó la venta (si existe)
+        if venta.usuario:
+            p.drawString(x_left, y_top - 75, f"Operador: {venta.usuario.username}")
+
+        # Tabla de ítems
+        y_cursor = y_top - 110
+        p.setFont("Helvetica-Bold", 10)
+        p.drawString(x_left, y_cursor, "Producto")
+        p.drawString(x_left + 200, y_cursor, "Cant.")
+        p.drawString(x_left + 250, y_cursor, "P.Unit")
+        p.drawString(x_left + 310, y_cursor, "Subtot.")
+        p.setFont("Helvetica", 10)
+
+        y_cursor -= 15
+        for det in venta.detalles.all():
+            nombre_prod = det.producto.nombre if det.producto else f"ID {det.producto_id}"
+            p.drawString(x_left, y_cursor, nombre_prod[:28])
+            p.drawRightString(x_left + 230, y_cursor, f"{det.cantidad}")
+            p.drawRightString(x_left + 300, y_cursor, f"${det.precio_unitario}")
+            p.drawRightString(x_left + 360, y_cursor, f"${det.total_renglon}")
+            y_cursor -= 12
+
+            # salto de página simple si nos quedamos sin lugar
+            if y_cursor < 120:
+                p.showPage()
+                y_cursor = height - 60
+                p.setFont("Helvetica", 10)
+
+        # Totales
+        y_cursor -= 20
+        p.setFont("Helvetica-Bold", 11)
+        p.drawRightString(x_left + 360, y_cursor, f"Subtotal: ${venta.subtotal}")
+        y_cursor -= 14
+        p.drawRightString(x_left + 360, y_cursor, f"Impuestos: ${venta.impuestos}")
+        y_cursor -= 14
+        p.drawRightString(x_left + 360, y_cursor, f"Bonif: ${venta.bonificaciones}")
+        y_cursor -= 14
+        p.setFont("Helvetica-Bold", 13)
+        p.drawRightString(x_left + 360, y_cursor, f"TOTAL: ${venta.total}")
+
+        # QR abajo a la izquierda
+        # pasamos la imagen PIL al canvas de reportlab
+        y_qr = 80
+        x_qr = x_left
+        qr_size = 100
+
+        qr_tmp = BytesIO()
+        qr_pil.save(qr_tmp, format="PNG")
+        qr_tmp.seek(0)
+
+        p.drawInlineImage(qr_tmp, x_qr, y_qr, width=qr_size, height=qr_size)
+        p.setFont("Helvetica", 8)
+        p.drawString(x_qr, y_qr - 12, "Escanear para verificar venta")
+
+        # cerrar PDF
+        p.showPage()
+        p.save()
+
+        pdf_buffer.seek(0)
+
+        filename = f"venta_{venta.id}.pdf"
+
+        return HttpResponse(
+            pdf_buffer.getvalue(),
+            content_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"'
+            },
+        )
