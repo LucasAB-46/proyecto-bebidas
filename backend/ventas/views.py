@@ -1,7 +1,8 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 import base64
 import qrcode
+import traceback
 
 from django.db import transaction
 from django.utils import timezone
@@ -29,6 +30,7 @@ class VentaViewSet(viewsets.ModelViewSet):
     /api/ventas/{id}/ticket/    -> GET ticket PDF base64 (+ QR)
     /api/ventas/historial/      -> GET filtro fecha/estado (dashboard)
     """
+
     queryset = (
         Venta.objects
         .select_related("local", "usuario")
@@ -62,6 +64,7 @@ class VentaViewSet(viewsets.ModelViewSet):
     def confirmar(self, request, pk=None):
         """
         Cambia la venta a 'confirmada' y descuenta stock.
+        Registra excepciones internas en logs para depuración.
         """
 
         def safe_decimal(value, default="0"):
@@ -89,44 +92,53 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Validar stock
-        for det in venta.detalles.all():
-            try:
+        try:
+            # Validar stock y datos
+            for det in venta.detalles.all():
+                try:
+                    cant = safe_decimal(det.cantidad)
+                except (InvalidOperation, Exception):
+                    return Response(
+                        {"detail": f"Cantidad inválida en renglón {det.id}: {det.cantidad!r}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                if cant <= 0:
+                    return Response(
+                        {"detail": f"Cantidad no puede ser <= 0 (renglón {det.id})"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                prod = Producto.objects.select_for_update().get(pk=det.producto_id)
+                actual = safe_decimal(prod.stock_actual or 0)
+
+                if actual < cant:
+                    return Response(
+                        {"detail": f"Stock insuficiente para {prod.nombre}: {actual} < {cant}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            # Descontar stock
+            for det in venta.detalles.all():
+                prod = Producto.objects.select_for_update().get(pk=det.producto_id)
+                actual = safe_decimal(prod.stock_actual or 0)
                 cant = safe_decimal(det.cantidad)
-            except Exception:
-                return Response(
-                    {"detail": f"Cantidad inválida en renglón {det.id}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                prod.stock_actual = actual - cant
+                prod.save(update_fields=["stock_actual"])
 
-            if cant <= 0:
-                return Response(
-                    {"detail": f"Cantidad no puede ser <= 0 (renglón {det.id})"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            venta.estado = "confirmada"
+            venta.save(update_fields=["estado", "updated_at"])
 
-            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
-            actual = safe_decimal(prod.stock_actual or 0)
+            data = VentaReadSerializer(venta).data
+            return Response(data, status=status.HTTP_200_OK)
 
-            if actual < cant:
-                return Response(
-                    {"detail": f"Stock insuficiente para {prod.nombre}: {actual} < {cant}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        # Descontar stock
-        for det in venta.detalles.all():
-            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
-            actual = safe_decimal(prod.stock_actual or 0)
-            cant = safe_decimal(det.cantidad)
-            prod.stock_actual = actual - cant
-            prod.save(update_fields=["stock_actual"])
-
-        venta.estado = "confirmada"
-        venta.save(update_fields=["estado", "updated_at"])
-
-        data = VentaReadSerializer(venta).data
-        return Response(data, status=status.HTTP_200_OK)
+        except Exception as e:
+            print("⚠️ Error interno en confirmar():", str(e))
+            traceback.print_exc()
+            return Response(
+                {"detail": f"Error interno en confirmar: {type(e).__name__}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
     # ---------- ANULAR ----------
     @action(detail=True, methods=["post"])
