@@ -15,11 +15,8 @@ from rest_framework.response import Response
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from .models import Venta, VentaDetalle
-from .serializers import (
-    VentaWriteSerializer,
-    VentaReadSerializer,
-)
+from .models import Venta
+from .serializers import VentaWriteSerializer, VentaReadSerializer
 from catalogo.models import Producto
 
 
@@ -55,20 +52,24 @@ class VentaViewSet(viewsets.ModelViewSet):
         try:
             local_id = int(raw_local)
         except (TypeError, ValueError):
-            local_id = 1  # fallback seguro
+            local_id = 1
 
-        serializer.save(
-            local_id=local_id,
-            usuario=self.request.user,
-        )
+        serializer.save(local_id=local_id, usuario=self.request.user)
 
-    # --------- ACCIÓN: confirmar venta ----------
+    # ---------- CONFIRMAR ----------
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def confirmar(self, request, pk=None):
         """
-        Cambia la venta a 'confirmada', descuenta stock.
+        Cambia la venta a 'confirmada' y descuenta stock.
         """
+
+        def safe_decimal(value, default="0"):
+            """Convierte value a Decimal de forma segura."""
+            if value in (None, ""):
+                value = default
+            return Decimal(str(value))
+
         try:
             venta = (
                 Venta.objects
@@ -88,57 +89,51 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 1) CONTROL STOCK
+        # Validar stock
         for det in venta.detalles.all():
-            prod = (
-                Producto.objects
-                .select_for_update()
-                .get(pk=det.producto_id)
-            )
-
-            # si el producto nunca tuvo stock cargado, tratamos como 0
-            actual = Decimal(prod.stock_actual or 0)
-            cant = Decimal(det.cantidad or 0)
-
-            if actual < cant:
+            try:
+                cant = safe_decimal(det.cantidad)
+            except Exception:
                 return Response(
-                    {
-                        "detail": (
-                            f"Stock insuficiente para {prod.nombre}: "
-                            f"{actual} < {cant}"
-                        )
-                    },
+                    {"detail": f"Cantidad inválida en renglón {det.id}"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # 2) DESCONTAR STOCK
+            if cant <= 0:
+                return Response(
+                    {"detail": f"Cantidad no puede ser <= 0 (renglón {det.id})"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
+            actual = safe_decimal(prod.stock_actual or 0)
+
+            if actual < cant:
+                return Response(
+                    {"detail": f"Stock insuficiente para {prod.nombre}: {actual} < {cant}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Descontar stock
         for det in venta.detalles.all():
-            prod = (
-                Producto.objects
-                .select_for_update()
-                .get(pk=det.producto_id)
-            )
-
-            actual = Decimal(prod.stock_actual or 0)
-            cant = Decimal(det.cantidad or 0)
-
+            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
+            actual = safe_decimal(prod.stock_actual or 0)
+            cant = safe_decimal(det.cantidad)
             prod.stock_actual = actual - cant
             prod.save(update_fields=["stock_actual"])
 
-        # 3) MARCAR CONFIRMADA
         venta.estado = "confirmada"
         venta.save(update_fields=["estado", "updated_at"])
 
         data = VentaReadSerializer(venta).data
         return Response(data, status=status.HTTP_200_OK)
 
-    # --------- ACCIÓN: anular venta ----------
+    # ---------- ANULAR ----------
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def anular(self, request, pk=None):
         """
-        Cambia la venta a 'anulada', repone stock.
-        Sólo se puede anular si está confirmada.
+        Cambia la venta a 'anulada' y repone stock.
         """
         try:
             venta = (
@@ -159,17 +154,10 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # reponer stock
         for det in venta.detalles.all():
-            prod = (
-                Producto.objects
-                .select_for_update()
-                .get(pk=det.producto_id)
-            )
-
+            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
             actual = Decimal(prod.stock_actual or 0)
             cant = Decimal(det.cantidad or 0)
-
             prod.stock_actual = actual + cant
             prod.save(update_fields=["stock_actual"])
 
@@ -179,14 +167,11 @@ class VentaViewSet(viewsets.ModelViewSet):
         data = VentaReadSerializer(venta).data
         return Response(data, status=status.HTTP_200_OK)
 
-    # --------- ACCIÓN: historial (para Dashboard) ----------
+    # ---------- HISTORIAL ----------
     @action(detail=False, methods=["get"])
     def historial(self, request):
         """
         /api/ventas/historial/?desde=2025-10-26&hasta=2025-10-26&estado=todos
-
-        Devuelve ventas en ese rango de fechas (inclusive),
-        opcionalmente filtrando por estado.
         """
         desde_str = request.query_params.get("desde")
         hasta_str = request.query_params.get("hasta")
@@ -196,16 +181,11 @@ class VentaViewSet(viewsets.ModelViewSet):
         desde = parse_date(desde_str) or hoy
         hasta = parse_date(hasta_str) or hoy
 
-        # datetimes con todo el día
         desde_dt = timezone.make_aware(
-            timezone.datetime.combine(
-                desde, timezone.datetime.min.time()
-            )
+            timezone.datetime.combine(desde, timezone.datetime.min.time())
         )
         hasta_dt = timezone.make_aware(
-            timezone.datetime.combine(
-                hasta, timezone.datetime.max.time()
-            )
+            timezone.datetime.combine(hasta, timezone.datetime.max.time())
         )
 
         qs = (
@@ -220,17 +200,11 @@ class VentaViewSet(viewsets.ModelViewSet):
         data = VentaReadSerializer(qs, many=True).data
         return Response(data, status=status.HTTP_200_OK)
 
-    # --------- ACCIÓN: ticket con QR ----------
+    # ---------- TICKET ----------
     @action(detail=True, methods=["get"])
     def ticket(self, request, pk=None):
         """
-        Devuelve el ticket de la venta en PDF (base64) y además
-        un PNG QR (base64) separado.
-
-        {
-          "pdf_base64": "...",
-          "qr_base64": "..."
-        }
+        Devuelve el ticket de la venta en PDF (base64) + QR.
         """
         try:
             venta = (
@@ -298,9 +272,6 @@ class VentaViewSet(viewsets.ModelViewSet):
         pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
         return Response(
-            {
-                "pdf_base64": pdf_b64,
-                "qr_base64": qr_b64,
-            },
+            {"pdf_base64": pdf_b64, "qr_base64": qr_b64},
             status=status.HTTP_200_OK,
         )
