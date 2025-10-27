@@ -2,15 +2,22 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from django.http import HttpResponse
 
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Venta
-from .serializers import VentaWriteSerializer, VentaReadSerializer
+from .models import Venta, VentaDetalle
+from .serializers import (
+    VentaWriteSerializer,
+    VentaReadSerializer,
+)
 from catalogo.models import Producto
+
+# 👇 nuevo import
+from .utils.pdf import build_ticket_pdf
 
 
 class VentaViewSet(viewsets.ModelViewSet):
@@ -19,7 +26,8 @@ class VentaViewSet(viewsets.ModelViewSet):
     /api/ventas/{id}/           -> retrieve
     /api/ventas/{id}/confirmar/ -> POST confirmar
     /api/ventas/{id}/anular/    -> POST anular
-    /api/ventas/historial/      -> GET con filtros (dashboard)
+    /api/ventas/{id}/ticket/    -> GET  PDF boleta
+    /api/ventas/historial/      -> GET con filtros fecha/estado (para dashboard)
     """
     queryset = (
         Venta.objects
@@ -35,28 +43,24 @@ class VentaViewSet(viewsets.ModelViewSet):
             return VentaWriteSerializer
         return VentaReadSerializer
 
-    def create(self, request, *args, **kwargs):
+    def perform_create(self, serializer):
         """
-        Creamos la venta en borrador usando el serializer con context.
-        Si algo está mal en datos → 400, no 500.
+        Creamos la venta en estado 'borrador' con sus detalles y totales.
+        Le pasamos local_id fijo=1 hasta que soportemos multi-local en el FE.
         """
-        serializer = self.get_serializer(
-            data=request.data,
-            context={
-                "local_id": 1,            # TODO: header X-Local-ID
-                "usuario": request.user,  # request.user existe x IsAuthenticated
-            },
-        )
-        serializer.is_valid(raise_exception=True)
+        # FUTURO MULTILOCAL:
+        #   local_id = request.META.get("HTTP_X_LOCAL_ID")
+        #   si no viene => 1 por ahora
+        local_id = 1
+        return serializer.save(local_id=local_id, usuario=self.request.user)
 
-        venta = serializer.save()  # llama al create() del serializer
-        read_data = VentaReadSerializer(venta).data
-        return Response(read_data, status=status.HTTP_201_CREATED)
-
-    # --------- confirmar ---------
+    # --------- ACCIÓN: confirmar venta ----------
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def confirmar(self, request, pk=None):
+        """
+        Cambia la venta a 'confirmada', descuenta stock.
+        """
         try:
             venta = (
                 Venta.objects
@@ -76,9 +80,13 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # validar stock
+        # control stock
         for det in venta.detalles.all():
-            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
+            prod = (
+                Producto.objects
+                .select_for_update()
+                .get(pk=det.producto_id)
+            )
             if prod.stock_actual < det.cantidad:
                 return Response(
                     {
@@ -90,9 +98,13 @@ class VentaViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # descontar
+        # descuento stock
         for det in venta.detalles.all():
-            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
+            prod = (
+                Producto.objects
+                .select_for_update()
+                .get(pk=det.producto_id)
+            )
             prod.stock_actual = (
                 Decimal(prod.stock_actual) - Decimal(det.cantidad)
             )
@@ -104,10 +116,14 @@ class VentaViewSet(viewsets.ModelViewSet):
         data = VentaReadSerializer(venta).data
         return Response(data, status=status.HTTP_200_OK)
 
-    # --------- anular ---------
+    # --------- ACCIÓN: anular venta ----------
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def anular(self, request, pk=None):
+        """
+        Cambia la venta a 'anulada', repone stock.
+        Sólo se puede anular si está confirmada.
+        """
         try:
             venta = (
                 Venta.objects
@@ -127,8 +143,13 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # reponer stock
         for det in venta.detalles.all():
-            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
+            prod = (
+                Producto.objects
+                .select_for_update()
+                .get(pk=det.producto_id)
+            )
             prod.stock_actual = (
                 Decimal(prod.stock_actual) + Decimal(det.cantidad)
             )
@@ -140,11 +161,13 @@ class VentaViewSet(viewsets.ModelViewSet):
         data = VentaReadSerializer(venta).data
         return Response(data, status=status.HTTP_200_OK)
 
-    # --------- historial (dashboard) ---------
+    # --------- ACCIÓN: historial (para Dashboard) ----------
     @action(detail=False, methods=["get"])
     def historial(self, request):
         """
         /api/ventas/historial/?desde=2025-10-26&hasta=2025-10-26&estado=todos
+        Devuelve ventas en ese rango de fechas (inclusive),
+        opcionalmente filtrando por estado.
         """
         desde_str = request.query_params.get("desde")
         hasta_str = request.query_params.get("hasta")
@@ -154,11 +177,16 @@ class VentaViewSet(viewsets.ModelViewSet):
         desde = parse_date(desde_str) or hoy
         hasta = parse_date(hasta_str) or hoy
 
+        # datetimes aware cubriendo todo el día
         desde_dt = timezone.make_aware(
-            timezone.datetime.combine(desde, timezone.datetime.min.time())
+            timezone.datetime.combine(
+                desde, timezone.datetime.min.time()
+            )
         )
         hasta_dt = timezone.make_aware(
-            timezone.datetime.combine(hasta, timezone.datetime.max.time())
+            timezone.datetime.combine(
+                hasta, timezone.datetime.max.time()
+            )
         )
 
         qs = (
@@ -172,3 +200,32 @@ class VentaViewSet(viewsets.ModelViewSet):
 
         data = VentaReadSerializer(qs, many=True).data
         return Response(data, status=status.HTTP_200_OK)
+
+    # --------- ACCIÓN: ticket (PDF) ----------
+    @action(detail=True, methods=["get"])
+    def ticket(self, request, pk=None):
+        """
+        GET /api/ventas/{id}/ticket/
+        Devuelve un PDF con la boleta/ticket, incluyendo QR.
+        """
+        try:
+            venta = (
+                Venta.objects
+                .select_related("local")
+                .prefetch_related("detalles", "detalles__producto")
+                .get(pk=pk)
+            )
+        except Venta.DoesNotExist:
+            return Response(
+                {"detail": "Venta no encontrada."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # generamos PDF en memoria
+        pdf_bytes = build_ticket_pdf(venta, local=venta.local if hasattr(venta, "local") else None)
+
+        # devolvemos como attachment
+        filename = f"ticket_venta_{venta.id}.pdf"
+        resp = HttpResponse(pdf_bytes, content_type="application/pdf")
+        resp["Content-Disposition"] = f'inline; filename="{filename}"'
+        return resp
