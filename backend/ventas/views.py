@@ -88,36 +88,44 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # control stock antes de descontar
+        # 1) CONTROL STOCK
         for det in venta.detalles.all():
             prod = (
                 Producto.objects
                 .select_for_update()
                 .get(pk=det.producto_id)
             )
-            if prod.stock_actual < det.cantidad:
+
+            # si el producto nunca tuvo stock cargado, tratamos como 0
+            actual = Decimal(prod.stock_actual or 0)
+            cant = Decimal(det.cantidad or 0)
+
+            if actual < cant:
                 return Response(
                     {
                         "detail": (
                             f"Stock insuficiente para {prod.nombre}: "
-                            f"{prod.stock_actual} < {det.cantidad}"
+                            f"{actual} < {cant}"
                         )
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # descontar stock
+        # 2) DESCONTAR STOCK
         for det in venta.detalles.all():
             prod = (
                 Producto.objects
                 .select_for_update()
                 .get(pk=det.producto_id)
             )
-            prod.stock_actual = (
-                Decimal(prod.stock_actual) - Decimal(det.cantidad)
-            )
+
+            actual = Decimal(prod.stock_actual or 0)
+            cant = Decimal(det.cantidad or 0)
+
+            prod.stock_actual = actual - cant
             prod.save(update_fields=["stock_actual"])
 
+        # 3) MARCAR CONFIRMADA
         venta.estado = "confirmada"
         venta.save(update_fields=["estado", "updated_at"])
 
@@ -158,9 +166,11 @@ class VentaViewSet(viewsets.ModelViewSet):
                 .select_for_update()
                 .get(pk=det.producto_id)
             )
-            prod.stock_actual = (
-                Decimal(prod.stock_actual) + Decimal(det.cantidad)
-            )
+
+            actual = Decimal(prod.stock_actual or 0)
+            cant = Decimal(det.cantidad or 0)
+
+            prod.stock_actual = actual + cant
             prod.save(update_fields=["stock_actual"])
 
         venta.estado = "anulada"
@@ -215,9 +225,8 @@ class VentaViewSet(viewsets.ModelViewSet):
     def ticket(self, request, pk=None):
         """
         Devuelve el ticket de la venta en PDF (base64) y además
-        un PNG QR (base64) separado por conveniencia del FE.
+        un PNG QR (base64) separado.
 
-        Respuesta:
         {
           "pdf_base64": "...",
           "qr_base64": "..."
@@ -235,7 +244,6 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # armamos el texto del QR
         qr_payload = f"VENTA:{venta.id}|TOTAL:{venta.total}|ESTADO:{venta.estado}"
         qr_img = qrcode.make(qr_payload)
         qr_buffer = BytesIO()
@@ -243,7 +251,6 @@ class VentaViewSet(viewsets.ModelViewSet):
         qr_bytes = qr_buffer.getvalue()
         qr_b64 = base64.b64encode(qr_bytes).decode("utf-8")
 
-        # armamos el PDF
         pdf_buffer = BytesIO()
         c = canvas.Canvas(pdf_buffer, pagesize=letter)
 
@@ -281,7 +288,6 @@ class VentaViewSet(viewsets.ModelViewSet):
         c.drawString(50, y, f"TOTAL: ${venta.total}")
         y -= 40
 
-        # pegamos el QR en el PDF
         qr_tmp = BytesIO(qr_bytes)
         c.drawInlineImage(qr_tmp, 50, y, width=100, height=100)
 
