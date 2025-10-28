@@ -1,8 +1,4 @@
 from decimal import Decimal
-from io import BytesIO
-import base64
-import qrcode
-
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -16,19 +12,24 @@ from .models import Venta, VentaDetalle
 from .serializers import (
     VentaWriteSerializer,
     VentaReadSerializer,
+    VentaDetalleReadSerializer,
 )
 from catalogo.models import Producto
+
+import io
+import base64
+import qrcode
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
 
 
 class VentaViewSet(viewsets.ModelViewSet):
     """
-    Endpoints principales:
-    - GET    /api/ventas/
-    - POST   /api/ventas/
-    - GET    /api/ventas/{id}/
-    - POST   /api/ventas/{id}/confirmar/
-    - POST   /api/ventas/{id}/anular/
-    - GET    /api/ventas/historial/?desde=YYYY-MM-DD&hasta=YYYY-MM-DD&estado=todos
+    /api/ventas/                -> list / create
+    /api/ventas/{id}/           -> retrieve
+    /api/ventas/{id}/confirmar/ -> POST confirmar
+    /api/ventas/{id}/anular/    -> POST anular
+    /api/ventas/historial/      -> GET con filtros fecha/estado (para dashboard)
     """
     queryset = (
         Venta.objects
@@ -46,33 +47,33 @@ class VentaViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """
-        Crea la venta inicial en estado 'borrador'.
-        Lee el local desde X-Local-ID, si no viene usa 1.
-        Además inyecta self.request.user.
+        Creamos la venta en estado 'borrador' con sus detalles y totales.
+        Le pasamos local_id fijo=1 hasta que soportemos multi-local en el FE.
         """
-        raw_local = self.request.META.get("HTTP_X_LOCAL_ID")
-        try:
-            local_id = int(raw_local)
-        except (TypeError, ValueError):
-            local_id = 1  # fallback seguro
+
+        local_id = 1  # TODO: luego leer request.META["HTTP_X_LOCAL_ID"]
+        usuario = self.request.user
+
+        # DEBUG LOG EN SERVER
+        print("💾 perform_create() entrando...")
+        print("💾 request.data =", self.request.data)
 
         try:
-            serializer.save(
-                local_id=local_id,
-                usuario=self.request.user,
-            )
+            venta = serializer.save(local_id=local_id, usuario=usuario)
         except Exception as e:
-            # Log fuerte en server y devolvemos 400 en vez de 500
-            print("⚠️ ERROR en perform_create / POST /api/ventas/:", repr(e))
+            # log para ver bien qué está pasando
+            print("💥 perform_create() ERROR:", repr(e))
             raise
+
+        return venta
 
     # --------- ACCIÓN: confirmar venta ----------
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def confirmar(self, request, pk=None):
         """
-        Cambia la venta a 'confirmada', descuenta stock,
-        devuelve la venta + QR base64.
+        Cambia la venta a 'confirmada', descuenta stock.
+        También genera QR y PDF en memoria.
         """
         try:
             venta = (
@@ -93,13 +94,14 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # validar stock
+        # control de stock
         for det in venta.detalles.all():
             prod = (
                 Producto.objects
                 .select_for_update()
                 .get(pk=det.producto_id)
             )
+
             if prod.stock_actual < det.cantidad:
                 return Response(
                     {
@@ -123,31 +125,66 @@ class VentaViewSet(viewsets.ModelViewSet):
             )
             prod.save(update_fields=["stock_actual"])
 
-        # marcar confirmada
         venta.estado = "confirmada"
         venta.save(update_fields=["estado", "updated_at"])
 
-        # serializar venta confirmada
-        venta_data = VentaReadSerializer(venta).data
+        # -------- QR ----------
+        qr_info = f"VENTA:{venta.id}|TOTAL:{venta.total}|FECHA:{venta.fecha.isoformat()}"
+        qr_img = qrcode.make(qr_info)
+        qr_buffer = io.BytesIO()
+        qr_img.save(qr_buffer, format="PNG")
+        qr_b64 = base64.b64encode(qr_buffer.getvalue()).decode("utf-8")
 
-        # generar QR base64 con {id,total,fecha}
-        qr_payload = {
-            "venta_id": venta.id,
-            "total": str(venta.total),
-            "fecha": venta.fecha.isoformat(),
-        }
-        qr_img = qrcode.make(qr_payload)
-        buffer = BytesIO()
-        qr_img.save(buffer, format="PNG")
-        qr_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        # -------- PDF ticket simple ----------
+        pdf_buffer = io.BytesIO()
+        c = canvas.Canvas(pdf_buffer, pagesize=A4)
+        y = 800
 
-        return Response(
-            {
-                "venta": venta_data,
-                "qr_base64": qr_b64,
-            },
-            status=status.HTTP_200_OK,
-        )
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(50, y, f"Ticket Venta #{venta.id}")
+        y -= 20
+
+        c.setFont("Helvetica", 11)
+        c.drawString(50, y, f"Fecha: {venta.fecha.strftime('%Y-%m-%d %H:%M')}")
+        y -= 15
+        c.drawString(50, y, f"Local: {venta.local.nombre if venta.local else 'N/D'}")
+        y -= 15
+        c.drawString(50, y, f"Atendió: {venta.usuario.username if venta.usuario else 'N/D'}")
+        y -= 30
+
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(50, y, "Detalle:")
+        y -= 15
+
+        c.setFont("Helvetica", 10)
+        for det in venta.detalles.all():
+            linea = f"{det.cantidad} x {det.producto.nombre} @ ${det.precio_unitario} = ${det.total_renglon}"
+            c.drawString(60, y, linea)
+            y -= 12
+            if y < 100:
+                c.showPage()
+                y = 800
+                c.setFont("Helvetica", 10)
+
+        y -= 20
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, f"TOTAL: ${venta.total}")
+        y -= 40
+
+        # incrustar QR como imagen
+        qr_buffer.seek(0)
+        c.drawInlineImage(qr_buffer, 50, y - 150, width=150, height=150)
+        c.showPage()
+        c.save()
+
+        pdf_b64 = base64.b64encode(pdf_buffer.getvalue()).decode("utf-8")
+
+        # respuesta final
+        data = VentaReadSerializer(venta).data
+        data["qr_base64"] = qr_b64
+        data["ticket_pdf_base64"] = pdf_b64
+
+        return Response(data, status=status.HTTP_200_OK)
 
     # --------- ACCIÓN: anular venta ----------
     @action(detail=True, methods=["post"])
@@ -199,20 +236,15 @@ class VentaViewSet(viewsets.ModelViewSet):
     def historial(self, request):
         """
         /api/ventas/historial/?desde=2025-10-26&hasta=2025-10-26&estado=todos
-
-        Devuelve ventas en ese rango de fechas (inclusive),
-        opcionalmente filtrando por estado.
         """
         desde_str = request.query_params.get("desde")
         hasta_str = request.query_params.get("hasta")
         estado = request.query_params.get("estado", "todos").lower()
 
-        # default: hoy
         hoy = timezone.localdate()
         desde = parse_date(desde_str) or hoy
         hasta = parse_date(hasta_str) or hoy
 
-        # cubrir todo el día 'hasta'
         desde_dt = timezone.make_aware(
             timezone.datetime.combine(
                 desde, timezone.datetime.min.time()

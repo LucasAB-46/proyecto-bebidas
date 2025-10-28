@@ -1,9 +1,10 @@
 from rest_framework import serializers
 from .models import Venta, VentaDetalle
+from django.utils import timezone
 
 
 # -------------------------
-# READ SERIALIZERS (respuesta al front)
+# READ SERIALIZERS
 # -------------------------
 
 class VentaDetalleReadSerializer(serializers.ModelSerializer):
@@ -31,11 +32,7 @@ class VentaReadSerializer(serializers.ModelSerializer):
     local_nombre = serializers.CharField(source="local.nombre", read_only=True)
     usuario_username = serializers.CharField(source="usuario.username", read_only=True)
 
-    # importante: SIN source="detalles"
-    detalles = VentaDetalleReadSerializer(
-        many=True,
-        read_only=True,
-    )
+    detalles = VentaDetalleReadSerializer(many=True, read_only=True)
 
     class Meta:
         model = Venta
@@ -56,12 +53,12 @@ class VentaReadSerializer(serializers.ModelSerializer):
 
 
 # -------------------------
-# WRITE SERIALIZERS (lo que POSTEA el front)
+# WRITE SERIALIZERS
 # -------------------------
 
 class VentaDetalleWriteSerializer(serializers.ModelSerializer):
     """
-    Acepta dos formatos para 'producto':
+    Acepta:
     - producto: 110
     - producto: { "id": 110, "nombre": "...", ... }
     """
@@ -79,53 +76,26 @@ class VentaDetalleWriteSerializer(serializers.ModelSerializer):
         ]
 
     def to_internal_value(self, data):
-        """
-        Sobreescribimos esto para normalizar 'producto' a un ID numérico.
-        """
         raw = super().to_internal_value(data)
-
         prod_field = raw.get("producto")
 
-        # casos:
-        # 1) ya es int -> lo dejamos
-        # 2) es dict con 'id' -> nos quedamos con ese id
+        # dict -> usar .id
         if isinstance(prod_field, dict):
             prod_id = prod_field.get("id")
             raw["producto"] = prod_id
-        else:
-            # si es algo tipo "110" string, lo intentamos castear
-            if not isinstance(prod_field, int):
-                try:
-                    raw["producto"] = int(prod_field)
-                except Exception:
-                    pass  # lo dejamos como vino, DRF se quejará si no sirve
+
+        # string numérica -> casteo
+        elif not isinstance(prod_field, int):
+            try:
+                raw["producto"] = int(prod_field)
+            except Exception:
+                pass
 
         return raw
 
 
 class VentaWriteSerializer(serializers.ModelSerializer):
-    """
-    Cuerpo esperado en POST /api/ventas/ (lo que manda el front actual):
-
-    {
-      "fecha": "2025-10-28T00:10:30Z",
-      "detalles": [
-        {
-          "producto": { "id": 110, "nombre": "Coca-Cola 500ml (Default)", ... },
-          "cantidad": 2,
-          "precio_unitario": 500,
-          "bonif": 0,
-          "impuestos": 0,
-          "renglon": 1
-        }
-      ]
-    }
-
-    También soporta:
-      "producto": 110
-    """
-
-    detalles = VentaDetalleWriteSerializer(many=True)
+    detalles = VentaDetalleWriteSerializer(many=True, allow_empty=False, write_only=True)
 
     class Meta:
         model = Venta
@@ -135,10 +105,7 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         ]
 
     def save(self, **kwargs):
-        """
-        Capturamos local_id y usuario que viene de perform_create()
-        y los guardamos en context para que create() pueda usarlos.
-        """
+        # guardamos info de perform_create
         local_id = kwargs.pop("local_id", None)
         usuario = kwargs.pop("usuario", None)
 
@@ -150,23 +117,20 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         return super().save(**kwargs)
 
     def create(self, validated_data):
-        """
-        - Crea Venta en estado 'borrador'
-        - Crea cada VentaDetalle
-        - Calcula subtotal/impuestos/bonificaciones/total
-        """
         detalles_data = validated_data.pop("detalles", [])
 
-        local_id = self.context.get("local_id_override")
-        usuario = self.context.get("usuario_override")
+        local_id = self.context.get("local_id_override", 1)
+        usuario = self.context.get("usuario_override", None)
 
-        if local_id is None:
-            local_id = 1  # fallback por ahora
+        # si no vino fecha en el body, usamos ahora()
+        fecha_val = validated_data.get("fecha")
+        if not fecha_val:
+            fecha_val = timezone.now()
 
         venta = Venta.objects.create(
             local_id=local_id,
             usuario=usuario,
-            fecha=validated_data.get("fecha"),
+            fecha=fecha_val,
             estado="borrador",
             subtotal=0,
             impuestos=0,
@@ -179,12 +143,7 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         bonif_acum = 0
 
         for det in detalles_data:
-            producto_val = det.get("producto")
-
-            # después de to_internal_value:
-            # producto_val debería ser ID (int)
-            producto_id = producto_val
-
+            producto_id = det.get("producto")
             cantidad = det.get("cantidad", 0) or 0
             pu = det.get("precio_unitario", 0) or 0
             bon = det.get("bonif", 0) or 0
