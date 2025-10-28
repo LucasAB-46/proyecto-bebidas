@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createSale, confirmSale, annulSale } from "../services/sales.js";
+import api from "../api/client"; // ⬅ usamos el cliente axios centralizado
 import { fetchProductos } from "../services/products.js";
 
 // --- componente resumen lateral ---
@@ -18,7 +18,10 @@ function ResumenDeVenta({
         <h3 className="card-title fw-bold mb-4">Resumen de la Venta</h3>
 
         <div className="d-flex justify-content-between align-items-start mb-4">
-          <div className="text-uppercase fw-semibold" style={{ fontSize: "1.1rem" }}>
+          <div
+            className="text-uppercase fw-semibold"
+            style={{ fontSize: "1.1rem" }}
+          >
             TOTAL
           </div>
           <div
@@ -92,6 +95,17 @@ function ResumenDeVenta({
   );
 }
 
+// helper: base64 -> Blob
+function base64ToBlob(b64, mime) {
+  const byteChars = atob(b64);
+  const byteNums = new Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) {
+    byteNums[i] = byteChars.charCodeAt(i);
+  }
+  const byteArray = new Uint8Array(byteNums);
+  return new Blob([byteArray], { type: mime });
+}
+
 // --- pantalla principal ---
 export default function Ventas() {
   // ---------------- state ----------------
@@ -103,6 +117,9 @@ export default function Ventas() {
   // para el panel de "última venta"
   const [ultimaVenta, setUltimaVenta] = useState(null); // {id, estado, total}
   const [anulando, setAnulando] = useState(false);
+
+  // si querés mostrar el QR en el futuro podés hacer:
+  // const [qrBase64, setQrBase64] = useState(null);
 
   // ---------------- carga inicial productos ----------------
   useEffect(() => {
@@ -192,9 +209,11 @@ export default function Ventas() {
   const totalVenta = carrito.reduce((acc, it) => acc + it.subtotal, 0);
 
   // ---------------- flujo venta ----------------
-  // 1. crea la venta borrador en /ventas/
-  // 2. confirma en /ventas/{id}/confirmar/
-  const confirmarVentaHandler = async () => {
+  // Nuevo flujo FINAL:
+  // 1. POST /api/ventas/  -> crea en estado BORRADOR, devuelve { id, estado, total }
+  // 2. POST /api/ventas/{id}/confirmar/ -> descuenta stock, genera ticket y qr
+  //    devuelve { venta: {...}, qr_base64, ticket_pdf_base64 }
+  const handleConfirmarVenta = async () => {
     if (!carrito.length) {
       alert("Agregá productos antes de confirmar.");
       return;
@@ -202,47 +221,66 @@ export default function Ventas() {
 
     setLoadingVenta(true);
     try {
-      // armo payload tal como lo espera el backend
-      // detalles: [{producto, cantidad, precio_unitario}]
+      // payload que espera el backend
       const payload = {
         fecha: new Date().toISOString(),
         detalles: carrito.map((item, idx) => ({
-          producto: item.id,
+          producto: item.id, // 👈 ID numérico del producto
           cantidad: item.cantidad,
           precio_unitario: item.precio,
           renglon: idx + 1,
         })),
       };
 
-      // 1) creo
-      const crearResp = await createSale(payload);
-      const ventaCreada = crearResp.data; // {id, estado, total, ...}
-      const ventaId = ventaCreada.id;
+      // 1) crear venta borrador
+      console.log("[VENTA] Paso 1: crear venta borrador...");
+      const resCreate = await api.post("/ventas/", payload);
+      console.log("[VENTA] create OK", resCreate.data);
 
-      // 2) confirmo
-      const confirmarResp = await confirmSale(ventaId);
-      const ventaConfirmada = confirmarResp.data;
+      const nuevaVentaId = resCreate.data.id;
+      if (!nuevaVentaId) {
+        console.error("No vino id en la venta creada", resCreate.data);
+        alert("Error interno: falta ID de la venta creada.");
+        return;
+      }
 
-      // guardo como últimaVenta para el panel resumen
+      // 2) confirmar venta (descuenta stock + genera PDF+QR)
+      console.log("[VENTA] Paso 2: confirmar venta id", nuevaVentaId);
+      const resConf = await api.post(`/ventas/${nuevaVentaId}/confirmar/`);
+      console.log("[VENTA] confirmar OK", resConf.data);
+
+      const { venta, qr_base64, ticket_pdf_base64 } = resConf.data;
+
+      // guardamos la venta confirmada como "última venta"
       setUltimaVenta({
-        id: ventaConfirmada.id,
-        estado: ventaConfirmada.estado,
-        total: ventaConfirmada.total,
+        id: venta.id,
+        estado: venta.estado,
+        total: venta.total,
       });
+
+      // Mostrar ticket PDF en pestaña nueva
+      if (ticket_pdf_base64) {
+        const pdfBlob = base64ToBlob(ticket_pdf_base64, "application/pdf");
+        const pdfUrl = URL.createObjectURL(pdfBlob);
+        window.open(pdfUrl, "_blank");
+      }
+
+      // Opcional: podríamos guardar qr_base64 en un modal
+      // setQrBase64(qr_base64);
 
       // limpio carrito
       setCarrito([]);
 
       alert("¡Venta confirmada con éxito!");
     } catch (err) {
-      console.error("Error confirmando venta", err);
+      console.error("ERROR en confirmar flujo:", err);
       const msg =
-        err.response?.data?.detail ||
-        err.response?.data?.estado ||
+        err?.response?.data?.detail ||
+        err?.response?.data?.estado ||
         "No se pudo confirmar la venta.";
       alert(msg);
     } finally {
-        setLoadingVenta(false);
+      setLoadingVenta(false);
     }
   };
 
@@ -253,7 +291,7 @@ export default function Ventas() {
 
     setAnulando(true);
     try {
-      const resp = await annulSale(ultimaVenta.id);
+      const resp = await api.post(`/ventas/${ultimaVenta.id}/anular/`);
       const ventaAnulada = resp.data;
       setUltimaVenta({
         id: ventaAnulada.id,
@@ -263,7 +301,7 @@ export default function Ventas() {
     } catch (err) {
       console.error("Error anulando", err);
       alert(
-        err.response?.data?.detail ||
+        err?.response?.data?.detail ||
           "No se pudo anular la venta (puede que ya esté ANULADA)"
       );
     } finally {
@@ -281,7 +319,7 @@ export default function Ventas() {
         <label className="form-label fw-bold">Buscar Producto</label>
         <input
           className="form-control form-control-lg"
-          placeholder="Escriba código o nombre..."
+          placeholder="Escribí código o nombre..."
           value={busqueda}
           onChange={(e) => setBusqueda(e.target.value)}
           onKeyDown={handleBuscarKeyDown}
@@ -330,12 +368,14 @@ export default function Ventas() {
                         />
                       </td>
                       <td style={{ whiteSpace: "nowrap" }}>
-                        ${item.precio.toLocaleString("es-AR", {
+                        $
+                        {item.precio.toLocaleString("es-AR", {
                           minimumFractionDigits: 2,
                         })}
                       </td>
                       <td style={{ whiteSpace: "nowrap" }}>
-                        ${item.subtotal.toLocaleString("es-AR", {
+                        $
+                        {item.subtotal.toLocaleString("es-AR", {
                           minimumFractionDigits: 2,
                         })}
                       </td>
@@ -362,7 +402,7 @@ export default function Ventas() {
             loading={loadingVenta}
             ultimaVenta={ultimaVenta}
             anulando={anulando}
-            onConfirmar={confirmarVentaHandler}
+            onConfirmar={handleConfirmarVenta}
             onAnularUltima={anularUltimaVenta}
             onCancelar={() => setCarrito([])}
           />

@@ -1,4 +1,8 @@
 from decimal import Decimal
+from io import BytesIO
+import base64
+import qrcode
+
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -12,16 +16,81 @@ from .models import Venta, VentaDetalle
 from .serializers import (
     VentaWriteSerializer,
     VentaReadSerializer,
-    VentaDetalleReadSerializer,
 )
 from catalogo.models import Producto
 
-import io
-import base64
-import qrcode
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
+# --- helpers internos -------------------------------------------------
 
+def build_qr_base64(venta_id: int) -> str:
+    """
+    Genera un QR simple (PNG) con la URL pública de la venta
+    y lo devuelve como base64 string.
+    """
+    # esto podría ser un link al comprobante público o al admin
+    qr_text = f"https://proyecto-bebidas-75q3.vercel.app/ticket/{venta_id}"
+
+    qr_img = qrcode.make(qr_text)
+    buffer = BytesIO()
+    qr_img.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    b64 = base64.b64encode(buffer.read()).decode("utf-8")
+    return b64
+
+
+def build_pdf_ticket_base64(venta: Venta) -> str:
+    """
+    Genera un PDF básico con datos de la venta
+    y lo devuelve como base64 string.
+    """
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+
+    y = 750
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, f"Ticket Venta #{venta.id}")
+    y -= 20
+
+    c.setFont("Helvetica", 10)
+    c.drawString(50, y, f"Fecha: {venta.fecha.strftime('%Y-%m-%d %H:%M:%S')}")
+    y -= 15
+    c.drawString(50, y, f"Local: {venta.local.nombre if venta.local else '-'}")
+    y -= 15
+    c.drawString(50, y, f"Estado: {venta.estado}")
+    y -= 15
+    c.drawString(50, y, f"Total: ${venta.total}")
+    y -= 30
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(50, y, "Detalle:")
+    y -= 20
+
+    c.setFont("Helvetica", 9)
+    for det in venta.detalles.all():
+        linea = (
+            f"{det.renglon}. {det.producto.nombre}  x{det.cantidad} "
+            f"@ ${det.precio_unitario}  -> ${det.total_renglon}"
+        )
+        c.drawString(50, y, linea)
+        y -= 12
+        if y < 80:
+            c.showPage()
+            y = 750
+            c.setFont("Helvetica", 9)
+
+    c.showPage()
+    c.save()
+
+    buffer.seek(0)
+    pdf_bytes = buffer.read()
+    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    return b64
+
+
+# --- ViewSet principal ------------------------------------------------
 
 class VentaViewSet(viewsets.ModelViewSet):
     """
@@ -45,25 +114,67 @@ class VentaViewSet(viewsets.ModelViewSet):
             return VentaWriteSerializer
         return VentaReadSerializer
 
+    # ⚠️ OJO: este override es CLAVE para que el frontend reciba {id,...}
+    def create(self, request, *args, **kwargs):
+        """
+        Creamos venta en estado 'borrador', con detalles,
+        y devolvemos al frontend al menos {id, estado, total}.
+        """
+        print("💾 perform_create() entrando...")
+        print("💾 request.data =", request.data)
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        venta = self.perform_create(serializer)
+
+        data_res = {
+            "id": venta.id,
+            "estado": venta.estado,
+            "total": str(venta.total),
+        }
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(data_res, status=status.HTTP_201_CREATED, headers=headers)
+
     def perform_create(self, serializer):
         """
         Creamos la venta en estado 'borrador' con sus detalles y totales.
         Le pasamos local_id fijo=1 hasta que soportemos multi-local en el FE.
         """
+        # en el futuro local_id vendrá del header X-Local-ID
+        # local_id = int(self.request.META.get("HTTP_X_LOCAL_ID", "1"))
+        local_id = 1
 
-        local_id = 1  # TODO: luego leer request.META["HTTP_X_LOCAL_ID"]
-        usuario = self.request.user
+        # guardamos la venta usando el serializer.write
+        venta = serializer.save(local_id=local_id, usuario=self.request.user)
 
-        # DEBUG LOG EN SERVER
-        print("💾 perform_create() entrando...")
-        print("💾 request.data =", self.request.data)
+        # IMPORTANTE: recalcular totales básicos acá si el serializer no lo hizo
+        subtotal = Decimal("0")
+        impuestos = Decimal("0")
+        bonif = Decimal("0")
+        total = Decimal("0")
 
-        try:
-            venta = serializer.save(local_id=local_id, usuario=usuario)
-        except Exception as e:
-            # log para ver bien qué está pasando
-            print("💥 perform_create() ERROR:", repr(e))
-            raise
+        # ahora garantizamos que cada detalle tiene total_renglon correcto
+        for det in venta.detalles.all():
+            linea_total = (
+                Decimal(det.cantidad) * Decimal(det.precio_unitario)
+                - Decimal(det.bonif or 0)
+                + Decimal(det.impuestos or 0)
+            )
+            det.total_renglon = linea_total
+            det.save(update_fields=["total_renglon"])
+
+            subtotal += Decimal(det.cantidad) * Decimal(det.precio_unitario)
+            impuestos += Decimal(det.impuestos or 0)
+            bonif += Decimal(det.bonif or 0)
+            total += linea_total
+
+        venta.subtotal = subtotal
+        venta.impuestos = impuestos
+        venta.bonificaciones = bonif
+        venta.total = total
+        venta.save(update_fields=["subtotal", "impuestos", "bonificaciones", "total"])
 
         return venta
 
@@ -72,8 +183,8 @@ class VentaViewSet(viewsets.ModelViewSet):
     @transaction.atomic
     def confirmar(self, request, pk=None):
         """
-        Cambia la venta a 'confirmada', descuenta stock.
-        También genera QR y PDF en memoria.
+        Cambia la venta a 'confirmada', descuenta stock,
+        y devuelve datos de la venta + QR + ticket PDF en base64.
         """
         try:
             venta = (
@@ -96,12 +207,7 @@ class VentaViewSet(viewsets.ModelViewSet):
 
         # control de stock
         for det in venta.detalles.all():
-            prod = (
-                Producto.objects
-                .select_for_update()
-                .get(pk=det.producto_id)
-            )
-
+            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
             if prod.stock_actual < det.cantidad:
                 return Response(
                     {
@@ -115,76 +221,30 @@ class VentaViewSet(viewsets.ModelViewSet):
 
         # descontar stock
         for det in venta.detalles.all():
-            prod = (
-                Producto.objects
-                .select_for_update()
-                .get(pk=det.producto_id)
-            )
+            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
             prod.stock_actual = (
                 Decimal(prod.stock_actual) - Decimal(det.cantidad)
             )
             prod.save(update_fields=["stock_actual"])
 
+        # marcar confirmada
         venta.estado = "confirmada"
         venta.save(update_fields=["estado", "updated_at"])
 
-        # -------- QR ----------
-        qr_info = f"VENTA:{venta.id}|TOTAL:{venta.total}|FECHA:{venta.fecha.isoformat()}"
-        qr_img = qrcode.make(qr_info)
-        qr_buffer = io.BytesIO()
-        qr_img.save(qr_buffer, format="PNG")
-        qr_b64 = base64.b64encode(qr_buffer.getvalue()).decode("utf-8")
+        # serializamos venta completa (lectura)
+        data_venta = VentaReadSerializer(venta).data
 
-        # -------- PDF ticket simple ----------
-        pdf_buffer = io.BytesIO()
-        c = canvas.Canvas(pdf_buffer, pagesize=A4)
-        y = 800
+        # generamos QR y PDF
+        qr_b64 = build_qr_base64(venta.id)
+        pdf_b64 = build_pdf_ticket_base64(venta)
 
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(50, y, f"Ticket Venta #{venta.id}")
-        y -= 20
+        respuesta = {
+            "venta": data_venta,
+            "qr_base64": qr_b64,
+            "ticket_pdf_base64": pdf_b64,
+        }
 
-        c.setFont("Helvetica", 11)
-        c.drawString(50, y, f"Fecha: {venta.fecha.strftime('%Y-%m-%d %H:%M')}")
-        y -= 15
-        c.drawString(50, y, f"Local: {venta.local.nombre if venta.local else 'N/D'}")
-        y -= 15
-        c.drawString(50, y, f"Atendió: {venta.usuario.username if venta.usuario else 'N/D'}")
-        y -= 30
-
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(50, y, "Detalle:")
-        y -= 15
-
-        c.setFont("Helvetica", 10)
-        for det in venta.detalles.all():
-            linea = f"{det.cantidad} x {det.producto.nombre} @ ${det.precio_unitario} = ${det.total_renglon}"
-            c.drawString(60, y, linea)
-            y -= 12
-            if y < 100:
-                c.showPage()
-                y = 800
-                c.setFont("Helvetica", 10)
-
-        y -= 20
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, f"TOTAL: ${venta.total}")
-        y -= 40
-
-        # incrustar QR como imagen
-        qr_buffer.seek(0)
-        c.drawInlineImage(qr_buffer, 50, y - 150, width=150, height=150)
-        c.showPage()
-        c.save()
-
-        pdf_b64 = base64.b64encode(pdf_buffer.getvalue()).decode("utf-8")
-
-        # respuesta final
-        data = VentaReadSerializer(venta).data
-        data["qr_base64"] = qr_b64
-        data["ticket_pdf_base64"] = pdf_b64
-
-        return Response(data, status=status.HTTP_200_OK)
+        return Response(respuesta, status=status.HTTP_200_OK)
 
     # --------- ACCIÓN: anular venta ----------
     @action(detail=True, methods=["post"])
@@ -198,7 +258,7 @@ class VentaViewSet(viewsets.ModelViewSet):
             venta = (
                 Venta.objects
                 .select_for_update()
-                .prefetch_related("detalles")
+                .prefetch_related("detalles", "detalles__producto")
                 .get(pk=pk)
             )
         except Venta.DoesNotExist:
@@ -215,11 +275,7 @@ class VentaViewSet(viewsets.ModelViewSet):
 
         # reponer stock
         for det in venta.detalles.all():
-            prod = (
-                Producto.objects
-                .select_for_update()
-                .get(pk=det.producto_id)
-            )
+            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
             prod.stock_actual = (
                 Decimal(prod.stock_actual) + Decimal(det.cantidad)
             )
@@ -228,14 +284,17 @@ class VentaViewSet(viewsets.ModelViewSet):
         venta.estado = "anulada"
         venta.save(update_fields=["estado", "updated_at"])
 
-        data = VentaReadSerializer(venta).data
-        return Response(data, status=status.HTTP_200_OK)
+        data_venta = VentaReadSerializer(venta).data
+        return Response(data_venta, status=status.HTTP_200_OK)
 
     # --------- ACCIÓN: historial (para Dashboard) ----------
     @action(detail=False, methods=["get"])
     def historial(self, request):
         """
         /api/ventas/historial/?desde=2025-10-26&hasta=2025-10-26&estado=todos
+
+        Devuelve ventas en ese rango de fechas (inclusive),
+        opcionalmente filtrando por estado.
         """
         desde_str = request.query_params.get("desde")
         hasta_str = request.query_params.get("hasta")
