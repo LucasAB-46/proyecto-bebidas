@@ -1,8 +1,7 @@
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from io import BytesIO
 import base64
 import qrcode
-import traceback
 
 from django.db import transaction
 from django.utils import timezone
@@ -13,24 +12,24 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-
-from .models import Venta
-from .serializers import VentaWriteSerializer, VentaReadSerializer
+from .models import Venta, VentaDetalle
+from .serializers import (
+    VentaWriteSerializer,
+    VentaReadSerializer,
+)
 from catalogo.models import Producto
 
 
 class VentaViewSet(viewsets.ModelViewSet):
     """
-    /api/ventas/                -> list / create
-    /api/ventas/{id}/           -> retrieve
-    /api/ventas/{id}/confirmar/ -> POST confirmar
-    /api/ventas/{id}/anular/    -> POST anular
-    /api/ventas/{id}/ticket/    -> GET ticket PDF base64 (+ QR)
-    /api/ventas/historial/      -> GET filtro fecha/estado (dashboard)
+    Endpoints principales:
+    - GET    /api/ventas/
+    - POST   /api/ventas/
+    - GET    /api/ventas/{id}/
+    - POST   /api/ventas/{id}/confirmar/
+    - POST   /api/ventas/{id}/anular/
+    - GET    /api/ventas/historial/?desde=YYYY-MM-DD&hasta=YYYY-MM-DD&estado=todos
     """
-
     queryset = (
         Venta.objects
         .select_related("local", "usuario")
@@ -47,37 +46,39 @@ class VentaViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """
-        Crea la venta en estado 'borrador' con sus detalles.
-        local_id viene del header X-Local-ID (multi-sucursal). Fallback = 1.
+        Crea la venta inicial en estado 'borrador'.
+        Lee el local desde X-Local-ID, si no viene usa 1.
+        Además inyecta self.request.user.
         """
         raw_local = self.request.META.get("HTTP_X_LOCAL_ID")
         try:
             local_id = int(raw_local)
         except (TypeError, ValueError):
-            local_id = 1
+            local_id = 1  # fallback seguro
 
-        serializer.save(local_id=local_id, usuario=self.request.user)
+        try:
+            serializer.save(
+                local_id=local_id,
+                usuario=self.request.user,
+            )
+        except Exception as e:
+            # Log fuerte en server y devolvemos 400 en vez de 500
+            print("⚠️ ERROR en perform_create / POST /api/ventas/:", repr(e))
+            raise
 
-    # ---------- CONFIRMAR ----------
+    # --------- ACCIÓN: confirmar venta ----------
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def confirmar(self, request, pk=None):
         """
-        Cambia la venta a 'confirmada' y descuenta stock.
-        Registra excepciones internas en logs para depuración.
+        Cambia la venta a 'confirmada', descuenta stock,
+        devuelve la venta + QR base64.
         """
-
-        def safe_decimal(value, default="0"):
-            """Convierte value a Decimal de forma segura."""
-            if value in (None, ""):
-                value = default
-            return Decimal(str(value))
-
         try:
             venta = (
                 Venta.objects
                 .select_for_update()
-                .prefetch_related("detalles")
+                .prefetch_related("detalles", "detalles__producto")
                 .get(pk=pk)
             )
         except Venta.DoesNotExist:
@@ -92,60 +93,69 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
-            # Validar stock y datos
-            for det in venta.detalles.all():
-                try:
-                    cant = safe_decimal(det.cantidad)
-                except (InvalidOperation, Exception):
-                    return Response(
-                        {"detail": f"Cantidad inválida en renglón {det.id}: {det.cantidad!r}"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                if cant <= 0:
-                    return Response(
-                        {"detail": f"Cantidad no puede ser <= 0 (renglón {det.id})"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                prod = Producto.objects.select_for_update().get(pk=det.producto_id)
-                actual = safe_decimal(prod.stock_actual or 0)
-
-                if actual < cant:
-                    return Response(
-                        {"detail": f"Stock insuficiente para {prod.nombre}: {actual} < {cant}"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-            # Descontar stock
-            for det in venta.detalles.all():
-                prod = Producto.objects.select_for_update().get(pk=det.producto_id)
-                actual = safe_decimal(prod.stock_actual or 0)
-                cant = safe_decimal(det.cantidad)
-                prod.stock_actual = actual - cant
-                prod.save(update_fields=["stock_actual"])
-
-            venta.estado = "confirmada"
-            venta.save(update_fields=["estado", "updated_at"])
-
-            data = VentaReadSerializer(venta).data
-            return Response(data, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            print("⚠️ Error interno en confirmar():", str(e))
-            traceback.print_exc()
-            return Response(
-                {"detail": f"Error interno en confirmar: {type(e).__name__}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        # validar stock
+        for det in venta.detalles.all():
+            prod = (
+                Producto.objects
+                .select_for_update()
+                .get(pk=det.producto_id)
             )
+            if prod.stock_actual < det.cantidad:
+                return Response(
+                    {
+                        "detail": (
+                            f"Stock insuficiente para {prod.nombre}: "
+                            f"{prod.stock_actual} < {det.cantidad}"
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-    # ---------- ANULAR ----------
+        # descontar stock
+        for det in venta.detalles.all():
+            prod = (
+                Producto.objects
+                .select_for_update()
+                .get(pk=det.producto_id)
+            )
+            prod.stock_actual = (
+                Decimal(prod.stock_actual) - Decimal(det.cantidad)
+            )
+            prod.save(update_fields=["stock_actual"])
+
+        # marcar confirmada
+        venta.estado = "confirmada"
+        venta.save(update_fields=["estado", "updated_at"])
+
+        # serializar venta confirmada
+        venta_data = VentaReadSerializer(venta).data
+
+        # generar QR base64 con {id,total,fecha}
+        qr_payload = {
+            "venta_id": venta.id,
+            "total": str(venta.total),
+            "fecha": venta.fecha.isoformat(),
+        }
+        qr_img = qrcode.make(qr_payload)
+        buffer = BytesIO()
+        qr_img.save(buffer, format="PNG")
+        qr_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        return Response(
+            {
+                "venta": venta_data,
+                "qr_base64": qr_b64,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # --------- ACCIÓN: anular venta ----------
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def anular(self, request, pk=None):
         """
-        Cambia la venta a 'anulada' y repone stock.
+        Cambia la venta a 'anulada', repone stock.
+        Sólo se puede anular si está confirmada.
         """
         try:
             venta = (
@@ -166,11 +176,16 @@ class VentaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # reponer stock
         for det in venta.detalles.all():
-            prod = Producto.objects.select_for_update().get(pk=det.producto_id)
-            actual = Decimal(prod.stock_actual or 0)
-            cant = Decimal(det.cantidad or 0)
-            prod.stock_actual = actual + cant
+            prod = (
+                Producto.objects
+                .select_for_update()
+                .get(pk=det.producto_id)
+            )
+            prod.stock_actual = (
+                Decimal(prod.stock_actual) + Decimal(det.cantidad)
+            )
             prod.save(update_fields=["stock_actual"])
 
         venta.estado = "anulada"
@@ -179,25 +194,34 @@ class VentaViewSet(viewsets.ModelViewSet):
         data = VentaReadSerializer(venta).data
         return Response(data, status=status.HTTP_200_OK)
 
-    # ---------- HISTORIAL ----------
+    # --------- ACCIÓN: historial (para Dashboard) ----------
     @action(detail=False, methods=["get"])
     def historial(self, request):
         """
         /api/ventas/historial/?desde=2025-10-26&hasta=2025-10-26&estado=todos
+
+        Devuelve ventas en ese rango de fechas (inclusive),
+        opcionalmente filtrando por estado.
         """
         desde_str = request.query_params.get("desde")
         hasta_str = request.query_params.get("hasta")
         estado = request.query_params.get("estado", "todos").lower()
 
+        # default: hoy
         hoy = timezone.localdate()
         desde = parse_date(desde_str) or hoy
         hasta = parse_date(hasta_str) or hoy
 
+        # cubrir todo el día 'hasta'
         desde_dt = timezone.make_aware(
-            timezone.datetime.combine(desde, timezone.datetime.min.time())
+            timezone.datetime.combine(
+                desde, timezone.datetime.min.time()
+            )
         )
         hasta_dt = timezone.make_aware(
-            timezone.datetime.combine(hasta, timezone.datetime.max.time())
+            timezone.datetime.combine(
+                hasta, timezone.datetime.max.time()
+            )
         )
 
         qs = (
@@ -211,79 +235,3 @@ class VentaViewSet(viewsets.ModelViewSet):
 
         data = VentaReadSerializer(qs, many=True).data
         return Response(data, status=status.HTTP_200_OK)
-
-    # ---------- TICKET ----------
-    @action(detail=True, methods=["get"])
-    def ticket(self, request, pk=None):
-        """
-        Devuelve el ticket de la venta en PDF (base64) + QR.
-        """
-        try:
-            venta = (
-                Venta.objects
-                .prefetch_related("detalles", "detalles__producto")
-                .get(pk=pk)
-            )
-        except Venta.DoesNotExist:
-            return Response(
-                {"detail": "Venta no encontrada."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        qr_payload = f"VENTA:{venta.id}|TOTAL:{venta.total}|ESTADO:{venta.estado}"
-        qr_img = qrcode.make(qr_payload)
-        qr_buffer = BytesIO()
-        qr_img.save(qr_buffer, format="PNG")
-        qr_bytes = qr_buffer.getvalue()
-        qr_b64 = base64.b64encode(qr_bytes).decode("utf-8")
-
-        pdf_buffer = BytesIO()
-        c = canvas.Canvas(pdf_buffer, pagesize=letter)
-
-        y = 750
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, f"Venta #{venta.id} - Estado: {venta.estado.upper()}")
-        y -= 20
-        c.setFont("Helvetica", 10)
-        c.drawString(50, y, f"Fecha: {venta.fecha.strftime('%Y-%m-%d %H:%M')}")
-        y -= 30
-
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(50, y, "Item")
-        c.drawString(200, y, "Cant")
-        c.drawString(250, y, "P.Unit")
-        c.drawString(320, y, "Total")
-        y -= 15
-        c.line(50, y, 400, y)
-        y -= 15
-
-        c.setFont("Helvetica", 10)
-        for det in venta.detalles.all():
-            nombre = det.producto.nombre if det.producto else "Producto"
-            c.drawString(50, y, nombre[:18])
-            c.drawString(200, y, str(det.cantidad))
-            c.drawString(250, y, f"${det.precio_unitario}")
-            c.drawString(320, y, f"${det.total_renglon}")
-            y -= 15
-            if y < 100:
-                c.showPage()
-                y = 750
-
-        y -= 20
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(50, y, f"TOTAL: ${venta.total}")
-        y -= 40
-
-        qr_tmp = BytesIO(qr_bytes)
-        c.drawInlineImage(qr_tmp, 50, y, width=100, height=100)
-
-        c.showPage()
-        c.save()
-
-        pdf_bytes = pdf_buffer.getvalue()
-        pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-
-        return Response(
-            {"pdf_base64": pdf_b64, "qr_base64": qr_b64},
-            status=status.HTTP_200_OK,
-        )

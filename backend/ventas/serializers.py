@@ -27,7 +27,7 @@ class VentaReadSerializer(serializers.ModelSerializer):
     local_nombre = serializers.CharField(source="local.nombre", read_only=True)
     usuario_username = serializers.CharField(source="usuario.username", read_only=True)
 
-    # ojo: SIN source="detalles"
+    # importante: SIN source="detalles"
     detalles = VentaDetalleReadSerializer(
         many=True,
         read_only=True,
@@ -66,7 +66,8 @@ class VentaDetalleWriteSerializer(serializers.ModelSerializer):
 
 class VentaWriteSerializer(serializers.ModelSerializer):
     """
-    Lo que recibe el POST /api/ventas/ del POS:
+    Cuerpo esperado en POST /api/ventas/:
+
     {
       "fecha": "2025-10-28T00:10:30Z",
       "detalles": [
@@ -77,8 +78,7 @@ class VentaWriteSerializer(serializers.ModelSerializer):
           "bonif": 0,
           "impuestos": 0,
           "renglon": 1
-        },
-        ...
+        }
       ]
     }
     """
@@ -92,21 +92,34 @@ class VentaWriteSerializer(serializers.ModelSerializer):
             "detalles",
         ]
 
+    def save(self, **kwargs):
+        """
+        Capturamos local_id y usuario que viene de perform_create()
+        y los guardamos en context para que create() pueda usarlos.
+        """
+        local_id = kwargs.pop("local_id", None)
+        usuario = kwargs.pop("usuario", None)
+
+        if local_id is not None:
+            self.context["local_id_override"] = local_id
+        if usuario is not None:
+            self.context["usuario_override"] = usuario
+
+        return super().save(**kwargs)
+
     def create(self, validated_data):
         """
-        - Crea la Venta en estado 'borrador'
+        - Crea Venta en estado 'borrador'
         - Crea cada VentaDetalle
-        - Calcula subtotal / impuestos / bonificaciones / total
+        - Calcula subtotal/impuestos/bonificaciones/total
         """
         detalles_data = validated_data.pop("detalles", [])
 
-        # Estos vienen de .save(local_id=..., usuario=...) en perform_create
         local_id = self.context.get("local_id_override")
         usuario = self.context.get("usuario_override")
 
         if local_id is None:
-            # fallback seguro
-            local_id = 1
+            local_id = 1  # fallback
 
         venta = Venta.objects.create(
             local_id=local_id,
@@ -155,18 +168,3 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         venta.save()
 
         return venta
-
-    def save(self, **kwargs):
-        """
-        Sobrescribimos save() para capturar local_id y usuario que la view
-        nos manda como kwargs, y guardarlos en self.context antes de create().
-        """
-        local_id = kwargs.pop("local_id", None)
-        usuario = kwargs.pop("usuario", None)
-
-        if local_id is not None:
-            self.context["local_id_override"] = local_id
-        if usuario is not None:
-            self.context["usuario_override"] = usuario
-
-        return super().save(**kwargs)
