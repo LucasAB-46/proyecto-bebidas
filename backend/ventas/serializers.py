@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from .models import Venta, VentaDetalle
-from catalogo.models import Producto
 
 
 class VentaDetalleReadSerializer(serializers.ModelSerializer):
@@ -28,7 +27,7 @@ class VentaReadSerializer(serializers.ModelSerializer):
     local_nombre = serializers.CharField(source="local.nombre", read_only=True)
     usuario_username = serializers.CharField(source="usuario.username", read_only=True)
 
-    # 👇 IMPORTANTE: NO usar source="detalles" acá
+    # ojo: SIN source="detalles"
     detalles = VentaDetalleReadSerializer(
         many=True,
         read_only=True,
@@ -67,23 +66,23 @@ class VentaDetalleWriteSerializer(serializers.ModelSerializer):
 
 class VentaWriteSerializer(serializers.ModelSerializer):
     """
-    Se usa para crear la venta desde el POS del front.
-    Espera algo tipo:
+    Lo que recibe el POST /api/ventas/ del POS:
     {
-        "fecha": "...",
-        "detalles": [
-            {
-                "producto": 123,
-                "cantidad": 2,
-                "precio_unitario": 500,
-                "bonif": 0,
-                "impuestos": 0,
-                "renglon": 1
-            },
-            ...
-        ]
+      "fecha": "2025-10-28T00:10:30Z",
+      "detalles": [
+        {
+          "producto": 1,
+          "cantidad": 2,
+          "precio_unitario": 500,
+          "bonif": 0,
+          "impuestos": 0,
+          "renglon": 1
+        },
+        ...
+      ]
     }
     """
+
     detalles = VentaDetalleWriteSerializer(many=True)
 
     class Meta:
@@ -95,15 +94,19 @@ class VentaWriteSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         """
-        Armamos la Venta en estado 'borrador':
-        - calculamos subtotal / impuestos / bonificaciones / total
-        - creamos los VentaDetalle
+        - Crea la Venta en estado 'borrador'
+        - Crea cada VentaDetalle
+        - Calcula subtotal / impuestos / bonificaciones / total
         """
         detalles_data = validated_data.pop("detalles", [])
 
-        # estos vienen inyectados por perform_create en la view
-        local_id = self.context.get("local_id")
-        usuario = self.context.get("usuario")
+        # Estos vienen de .save(local_id=..., usuario=...) en perform_create
+        local_id = self.context.get("local_id_override")
+        usuario = self.context.get("usuario_override")
+
+        if local_id is None:
+            # fallback seguro
+            local_id = 1
 
         venta = Venta.objects.create(
             local_id=local_id,
@@ -153,19 +156,17 @@ class VentaWriteSerializer(serializers.ModelSerializer):
 
         return venta
 
-    def to_internal_value(self, data):
+    def save(self, **kwargs):
         """
-        Permitimos que el front nos mande números como string.
+        Sobrescribimos save() para capturar local_id y usuario que la view
+        nos manda como kwargs, y guardarlos en self.context antes de create().
         """
-        ret = super().to_internal_value(data)
-        # podríamos normalizar acá si quisiéramos, pero por ahora DRF ya lo valida
-        return ret
+        local_id = kwargs.pop("local_id", None)
+        usuario = kwargs.pop("usuario", None)
 
-    def __init__(self, *args, **kwargs):
-        """
-        Hacemos override de __init__ para pasar local_id y usuario
-        desde la view (perform_create).
-        """
-        self.context.setdefault("local_id", kwargs.pop("local_id", None))
-        self.context.setdefault("usuario", kwargs.pop("usuario", None))
-        super().__init__(*args, **kwargs)
+        if local_id is not None:
+            self.context["local_id_override"] = local_id
+        if usuario is not None:
+            self.context["usuario_override"] = usuario
+
+        return super().save(**kwargs)
