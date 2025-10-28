@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import api from "../api/client"; // ⬅ usamos el cliente axios centralizado
+import { createSale, confirmSale, annulSale } from "../services/sales.js";
 import { fetchProductos } from "../services/products.js";
 
 // --- componente resumen lateral ---
@@ -95,17 +95,6 @@ function ResumenDeVenta({
   );
 }
 
-// helper: base64 -> Blob
-function base64ToBlob(b64, mime) {
-  const byteChars = atob(b64);
-  const byteNums = new Array(byteChars.length);
-  for (let i = 0; i < byteChars.length; i++) {
-    byteNums[i] = byteChars.charCodeAt(i);
-  }
-  const byteArray = new Uint8Array(byteNums);
-  return new Blob([byteArray], { type: mime });
-}
-
 // --- pantalla principal ---
 export default function Ventas() {
   // ---------------- state ----------------
@@ -117,9 +106,6 @@ export default function Ventas() {
   // para el panel de "última venta"
   const [ultimaVenta, setUltimaVenta] = useState(null); // {id, estado, total}
   const [anulando, setAnulando] = useState(false);
-
-  // si querés mostrar el QR en el futuro podés hacer:
-  // const [qrBase64, setQrBase64] = useState(null);
 
   // ---------------- carga inicial productos ----------------
   useEffect(() => {
@@ -209,11 +195,9 @@ export default function Ventas() {
   const totalVenta = carrito.reduce((acc, it) => acc + it.subtotal, 0);
 
   // ---------------- flujo venta ----------------
-  // Nuevo flujo FINAL:
-  // 1. POST /api/ventas/  -> crea en estado BORRADOR, devuelve { id, estado, total }
-  // 2. POST /api/ventas/{id}/confirmar/ -> descuenta stock, genera ticket y qr
-  //    devuelve { venta: {...}, qr_base64, ticket_pdf_base64 }
-  const handleConfirmarVenta = async () => {
+  // 1. crea la venta borrador en /ventas/
+  // 2. confirma en /ventas/{id}/confirmar/
+  const confirmarVentaHandler = async () => {
     if (!carrito.length) {
       alert("Agregá productos antes de confirmar.");
       return;
@@ -221,52 +205,51 @@ export default function Ventas() {
 
     setLoadingVenta(true);
     try {
-      // payload que espera el backend
+      console.log("[VENTA] Paso 1: crear venta borrador...");
       const payload = {
         fecha: new Date().toISOString(),
         detalles: carrito.map((item, idx) => ({
-          producto: item.id, // 👈 ID numérico del producto
+          producto: item.id,
           cantidad: item.cantidad,
           precio_unitario: item.precio,
           renglon: idx + 1,
         })),
       };
 
-      // 1) crear venta borrador
-      console.log("[VENTA] Paso 1: crear venta borrador...");
-      const resCreate = await api.post("/ventas/", payload);
-      console.log("[VENTA] create OK", resCreate.data);
+      const crearResp = await createSale(payload);
+      console.log("[VENTA] create OK", crearResp);
 
-      const nuevaVentaId = resCreate.data.id;
-      if (!nuevaVentaId) {
-        console.error("No vino id en la venta creada", resCreate.data);
-        alert("Error interno: falta ID de la venta creada.");
+      // en Railway estamos devolviendo algo tipo:
+      // { id, estado, total }  -> PERO si por algún motivo falla el serializer
+      // puede venir vacío. Entonces hacemos fallback seguro.
+      const ventaId = crearResp?.data?.id;
+      const ventaEstado = crearResp?.data?.estado ?? "borrador";
+      const ventaTotal = crearResp?.data?.total ?? totalVenta;
+
+      if (!ventaId) {
+        console.error("No vino id en la venta creada", crearResp);
+        alert("No se pudo crear la venta (sin ID).");
+        setLoadingVenta(false);
         return;
       }
 
-      // 2) confirmar venta (descuenta stock + genera PDF+QR)
-      console.log("[VENTA] Paso 2: confirmar venta id", nuevaVentaId);
-      const resConf = await api.post(`/ventas/${nuevaVentaId}/confirmar/`);
-      console.log("[VENTA] confirmar OK", resConf.data);
+      console.log("[VENTA] Paso 2: confirmar venta id", ventaId);
+      const confirmarResp = await confirmSale(ventaId);
+      console.log("[VENTA] confirmar OK", confirmarResp);
 
-      const { venta, qr_base64, ticket_pdf_base64 } = resConf.data;
+      // puede venir vacío confirmarResp.data → fallback
+      const finalData = confirmarResp?.data || {};
+      const finalId = finalData.id ?? ventaId;
+      const finalEstado =
+        finalData.estado ?? ventaEstado ?? "confirmada";
+      const finalTotal = finalData.total ?? ventaTotal ?? 0;
 
-      // guardamos la venta confirmada como "última venta"
+      // guardo como últimaVenta para el panel resumen
       setUltimaVenta({
-        id: venta.id,
-        estado: venta.estado,
-        total: venta.total,
+        id: finalId,
+        estado: finalEstado,
+        total: finalTotal,
       });
-
-      // Mostrar ticket PDF en pestaña nueva
-      if (ticket_pdf_base64) {
-        const pdfBlob = base64ToBlob(ticket_pdf_base64, "application/pdf");
-        const pdfUrl = URL.createObjectURL(pdfBlob);
-        window.open(pdfUrl, "_blank");
-      }
-
-      // Opcional: podríamos guardar qr_base64 en un modal
-      // setQrBase64(qr_base64);
 
       // limpio carrito
       setCarrito([]);
@@ -275,8 +258,8 @@ export default function Ventas() {
     } catch (err) {
       console.error("ERROR en confirmar flujo:", err);
       const msg =
-        err?.response?.data?.detail ||
-        err?.response?.data?.estado ||
+        err.response?.data?.detail ||
+        err.response?.data?.estado ||
         "No se pudo confirmar la venta.";
       alert(msg);
     } finally {
@@ -291,17 +274,17 @@ export default function Ventas() {
 
     setAnulando(true);
     try {
-      const resp = await api.post(`/ventas/${ultimaVenta.id}/anular/`);
-      const ventaAnulada = resp.data;
+      const resp = await annulSale(ultimaVenta.id);
+      const ventaAnulada = resp.data || {};
       setUltimaVenta({
-        id: ventaAnulada.id,
-        estado: ventaAnulada.estado,
-        total: ventaAnulada.total,
+        id: ventaAnulada.id ?? ultimaVenta.id,
+        estado: ventaAnulada.estado ?? "anulada",
+        total: ventaAnulada.total ?? ultimaVenta.total ?? 0,
       });
     } catch (err) {
       console.error("Error anulando", err);
       alert(
-        err?.response?.data?.detail ||
+        err.response?.data?.detail ||
           "No se pudo anular la venta (puede que ya esté ANULADA)"
       );
     } finally {
@@ -319,7 +302,7 @@ export default function Ventas() {
         <label className="form-label fw-bold">Buscar Producto</label>
         <input
           className="form-control form-control-lg"
-          placeholder="Escribí código o nombre..."
+          placeholder="Escriba código o nombre..."
           value={busqueda}
           onChange={(e) => setBusqueda(e.target.value)}
           onKeyDown={handleBuscarKeyDown}
@@ -402,7 +385,7 @@ export default function Ventas() {
             loading={loadingVenta}
             ultimaVenta={ultimaVenta}
             anulando={anulando}
-            onConfirmar={handleConfirmarVenta}
+            onConfirmar={confirmarVentaHandler}
             onAnularUltima={anularUltimaVenta}
             onCancelar={() => setCarrito([])}
           />
