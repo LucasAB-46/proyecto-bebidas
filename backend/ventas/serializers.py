@@ -2,6 +2,10 @@ from rest_framework import serializers
 from .models import Venta, VentaDetalle
 
 
+# -------------------------
+# READ SERIALIZERS (respuesta al front)
+# -------------------------
+
 class VentaDetalleReadSerializer(serializers.ModelSerializer):
     producto_nombre = serializers.CharField(
         source="producto.nombre",
@@ -51,7 +55,18 @@ class VentaReadSerializer(serializers.ModelSerializer):
         ]
 
 
+# -------------------------
+# WRITE SERIALIZERS (lo que POSTEA el front)
+# -------------------------
+
 class VentaDetalleWriteSerializer(serializers.ModelSerializer):
+    """
+    Acepta dos formatos para 'producto':
+    - producto: 110
+    - producto: { "id": 110, "nombre": "...", ... }
+    """
+    producto = serializers.JSONField()
+
     class Meta:
         model = VentaDetalle
         fields = [
@@ -63,16 +78,40 @@ class VentaDetalleWriteSerializer(serializers.ModelSerializer):
             "renglon",
         ]
 
+    def to_internal_value(self, data):
+        """
+        Sobreescribimos esto para normalizar 'producto' a un ID numérico.
+        """
+        raw = super().to_internal_value(data)
+
+        prod_field = raw.get("producto")
+
+        # casos:
+        # 1) ya es int -> lo dejamos
+        # 2) es dict con 'id' -> nos quedamos con ese id
+        if isinstance(prod_field, dict):
+            prod_id = prod_field.get("id")
+            raw["producto"] = prod_id
+        else:
+            # si es algo tipo "110" string, lo intentamos castear
+            if not isinstance(prod_field, int):
+                try:
+                    raw["producto"] = int(prod_field)
+                except Exception:
+                    pass  # lo dejamos como vino, DRF se quejará si no sirve
+
+        return raw
+
 
 class VentaWriteSerializer(serializers.ModelSerializer):
     """
-    Cuerpo esperado en POST /api/ventas/:
+    Cuerpo esperado en POST /api/ventas/ (lo que manda el front actual):
 
     {
       "fecha": "2025-10-28T00:10:30Z",
       "detalles": [
         {
-          "producto": 1,
+          "producto": { "id": 110, "nombre": "Coca-Cola 500ml (Default)", ... },
           "cantidad": 2,
           "precio_unitario": 500,
           "bonif": 0,
@@ -81,6 +120,9 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         }
       ]
     }
+
+    También soporta:
+      "producto": 110
     """
 
     detalles = VentaDetalleWriteSerializer(many=True)
@@ -119,7 +161,7 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         usuario = self.context.get("usuario_override")
 
         if local_id is None:
-            local_id = 1  # fallback
+            local_id = 1  # fallback por ahora
 
         venta = Venta.objects.create(
             local_id=local_id,
@@ -137,17 +179,23 @@ class VentaWriteSerializer(serializers.ModelSerializer):
         bonif_acum = 0
 
         for det in detalles_data:
-            cantidad = det.get("cantidad", 0)
-            pu = det.get("precio_unitario", 0)
-            bon = det.get("bonif", 0)
-            imp = det.get("impuestos", 0)
+            producto_val = det.get("producto")
+
+            # después de to_internal_value:
+            # producto_val debería ser ID (int)
+            producto_id = producto_val
+
+            cantidad = det.get("cantidad", 0) or 0
+            pu = det.get("precio_unitario", 0) or 0
+            bon = det.get("bonif", 0) or 0
+            imp = det.get("impuestos", 0) or 0
 
             total_renglon = (cantidad * pu) - bon + imp
 
             VentaDetalle.objects.create(
                 venta=venta,
                 renglon=det.get("renglon", 1),
-                producto_id=det["producto"],
+                producto_id=producto_id,
                 cantidad=cantidad,
                 precio_unitario=pu,
                 bonif=bon,
